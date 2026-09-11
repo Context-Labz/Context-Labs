@@ -171,6 +171,22 @@ const tools = [
   }),
 ];
 
+// ─────────────────────────────────────────────────────────────────────────
+// TOMORROW (build during event) — see AGENT_VISION.md build order.
+// These slot in as additional defineTool(...) entries in the `tools` array
+// above; left as notes so the scaffold builds clean and they're net-new
+// commits tomorrow:
+//
+//   research_objective(workspaceId, objectiveId): scoped Exa auto-research
+//     for ONE objective — reuse the search+extract logic already in
+//     lib/agent/run-research.ts, targeted at a single objective instead of
+//     the whole table. Backs the "no evidence for Team yet — search?" nudge.
+//
+// Also tomorrow, in lib/agent/run-research.ts / add-source: add the
+// `text.includes(quote)` guard before accepting any evidence, so
+// "no claim without a source" is ENFORCED, not just prompted. (Judge note.)
+// ─────────────────────────────────────────────────────────────────────────
+
 const runtime = new CopilotRuntime({
   agents: {
     default: new BuiltInAgent({

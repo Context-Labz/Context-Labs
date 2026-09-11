@@ -1,0 +1,19 @@
+# dependencies
+node_modules/
+**/node_modules/
+
+# builds
+.next/
+*.tsbuildinfo
+# dist ignored in dev; ship it tomorrow (git add -f extension/dist). See docs.
+dist/
+
+# env — NEVER commit real keys
+.env
+.env.local
+.env*.local
+!.env.example
+
+# os / editor
+.DS_Store
+*.log
