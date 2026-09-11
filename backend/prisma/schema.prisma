@@ -1,0 +1,11 @@
+// OPTIONAL stretch — the demo runs fully in-memory (src/lib/workspace-store.ts).
+// Only wire this up if you have time after the core loop is demo-stable.
+datasource db { provider = "postgresql"; url = env("DATABASE_URL") }
+generator client { provider = "prisma-client-js" }
+
+model Workspace {
+  id        String   @id
+  question  String
+  json      Json     // the whole ResearchWorkspace, serialized
+  createdAt DateTime @default(now())
+}
