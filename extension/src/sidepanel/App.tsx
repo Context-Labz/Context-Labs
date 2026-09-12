@@ -29,11 +29,9 @@ const OBJECTIVE_KEYWORDS: Record<string, string[]> = {
 export default function App() {
   const [ws, setWs] = useState<ResearchWorkspace | null>(null);
   const [loading, setLoading] = useState(true);
-  const [question, setQuestion] = useState("");
-  const [running, setRunning] = useState(false);
   const [detectedQuery, setDetectedQuery] = useState<string | null>(null);
   const [relevantObjective, setRelevantObjective] = useState<string | null>(null);
-  const [capturingRelevant, setCapturingRelevant] = useState(false);
+  const [capturing, setCapturing] = useState(false);
 
   // FIX (was gap #2 in the review): a workspace must exist on the backend
   // before anything else touches it. This is the one explicit place that
@@ -47,7 +45,6 @@ export default function App() {
         if (savedId) {
           const existing = await api.getWorkspace(savedId);
           setWs(existing);
-          setQuestion(existing.question);
           return;
         }
       } catch {
@@ -120,42 +117,28 @@ export default function App() {
     if (ws) setWs(await api.getWorkspace(ws.id));
   };
 
-  const trackSearch = () => {
-    if (detectedQuery) {
-      setQuestion(detectedQuery);
-      setDetectedQuery(null); // Clear the banner after tracking
-    }
-  };
-
-  const captureRelevantPage = () => {
-    if (!ws || !relevantObjective) return;
-    setCapturingRelevant(true);
+  // Unified capture function - captures current page and populates objectives
+  const captureCurrentPage = () => {
+    if (!ws) return;
+    setCapturing(true);
     chrome.runtime.sendMessage({ type: "CAPTURE_PAGE" }, async (page: any) => {
       if (!page || page.error) {
         alert(page?.error ?? "Could not read the current page.");
-        setCapturingRelevant(false);
+        setCapturing(false);
         return;
       }
       try {
         await api.addCapturedSource(ws.id, { title: page.title, url: page.url, text: page.bodyText }, undefined);
-        setRelevantObjective(null); // Clear badge after capturing
+        // Clear banners after successful capture
+        setDetectedQuery(null);
+        setRelevantObjective(null);
         refresh();
       } catch {
         alert("Couldn't save this page — check the backend logs.");
       } finally {
-        setCapturingRelevant(false);
+        setCapturing(false);
       }
     });
-  };
-
-  const runAutomatically = async () => {
-    if (!ws || !question.trim()) return;
-    setRunning(true);
-    try {
-      setWs(await api.startResearch(ws.id, question, ws.table.columns));
-    } finally {
-      setRunning(false);
-    }
   };
 
   if (loading || !ws) {
@@ -172,10 +155,11 @@ export default function App() {
             🔍 You searched: "<strong>{detectedQuery}</strong>"
           </span>
           <button
-            onClick={trackSearch}
-            className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 whitespace-nowrap"
+            onClick={captureCurrentPage}
+            disabled={capturing}
+            className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
           >
-            Track this search
+            {capturing ? "Capturing…" : "Capture"}
           </button>
         </div>
       )}
@@ -183,33 +167,17 @@ export default function App() {
       {relevantObjective && (
         <div className="flex items-center justify-between gap-2 p-2 bg-green-50 border border-green-200 rounded">
           <span className="text-sm">
-            📄 This page looks relevant to <strong>{relevantObjective}</strong> — Capture?
+            📄 This page looks relevant to <strong>{relevantObjective}</strong>
           </span>
           <button
-            onClick={captureRelevantPage}
-            disabled={capturingRelevant}
+            onClick={captureCurrentPage}
+            disabled={capturing}
             className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 whitespace-nowrap"
           >
-            {capturingRelevant ? "Capturing…" : "Capture"}
+            {capturing ? "Capturing…" : "Capture"}
           </button>
         </div>
       )}
-
-      <div className="flex items-center gap-2">
-        <input
-          value={question}
-          onChange={(e) => setQuestion(e.target.value)}
-          placeholder="What are you researching? (e.g. Is there a market for premium swimwear in Kenya?)"
-          className="border rounded px-2 py-1 flex-1"
-        />
-        <button
-          onClick={runAutomatically}
-          disabled={running || !question.trim()}
-          className="px-2 py-1 bg-emerald-700 text-white rounded disabled:opacity-50 whitespace-nowrap"
-        >
-          {running ? "Researching…" : "Research"}
-        </button>
-      </div>
 
       <ResearchPlanView ws={ws} onResolved={setWs} />
       <CapturePageButton workspaceId={ws.id} onCaptured={refresh} />
