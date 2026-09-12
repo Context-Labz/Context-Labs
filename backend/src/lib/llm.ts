@@ -1,17 +1,17 @@
-// One chat abstraction, two providers. OpenAI primary, OpenRouter fallback.
-// The fallback exists so a live-demo rate limit is a 2-second hiccup, not a
-// dead demo (note: it only triggers on 429s — a bad/unavailable model name
-// on the primary client will NOT fall through to OpenRouter, it'll just
-// error. Verify DEFAULT_MODEL against a real OpenAI model list tonight).
+// One chat abstraction, two providers. OpenRouter primary, OpenAI optional fallback.
+// OpenRouter is the main client because we have working OpenRouter credits, not
+// standard OpenAI API access (only Codex, which doesn't work for chat completions).
+// The optional OpenAI fallback is kept in case OPENAI_API_KEY is set, but it's
+// not required and won't break anything if missing.
 import OpenAI from "openai";
 import { z } from "zod";
 
-// UNVERIFIED placeholder — confirm this is a real, currently-available
-// model string for your OpenAI key before relying on it as the default.
-const DEFAULT_MODEL = process.env.LLM_MODEL || "gpt-4o-mini";
+// OpenRouter model string format: "provider/model" (e.g., "openai/gpt-4o-mini").
+// This is different from bare OpenAI model names.
+const DEFAULT_MODEL = process.env.LLM_MODEL || "openai/gpt-4o-mini";
 
 // FIX (found by actually running `next build`, not just `tsc`): constructing
-// the OpenAI client at module load time throws "OPENAI_API_KEY is missing"
+// the OpenAI client at module load time throws "OPENROUTER_API_KEY is missing"
 // during Next's build-time page-data collection if the key isn't present as
 // a BUILD-time env var — which it often isn't for Cloud Run (env vars set
 // via `gcloud run deploy --set-env-vars` are RUNTIME-only). That broke
@@ -20,15 +20,20 @@ const DEFAULT_MODEL = process.env.LLM_MODEL || "gpt-4o-mini";
 // client is only constructed the first time a request actually needs it.
 let _primary: OpenAI | null = null;
 function primary(): OpenAI {
-  if (!_primary) _primary = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  if (!_primary) {
+    _primary = new OpenAI({
+      apiKey: process.env.OPENROUTER_API_KEY,
+      baseURL: "https://openrouter.ai/api/v1",
+    });
+  }
   return _primary;
 }
 
 let _fallback: OpenAI | null | undefined;
 function fallback(): OpenAI | null {
   if (_fallback === undefined) {
-    _fallback = process.env.OPENROUTER_API_KEY
-      ? new OpenAI({ apiKey: process.env.OPENROUTER_API_KEY, baseURL: "https://openrouter.ai/api/v1" })
+    _fallback = process.env.OPENAI_API_KEY
+      ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
       : null;
   }
   return _fallback;

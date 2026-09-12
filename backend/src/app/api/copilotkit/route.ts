@@ -190,9 +190,12 @@ const tools = [
 const runtime = new CopilotRuntime({
   agents: {
     default: new BuiltInAgent({
-      // Verified enum value on @copilotkit/runtime@1.71.0's BuiltInAgentModel
-      // type — override with LLM_MODEL if you want a different one from that
-      // same list (e.g. "openai/gpt-5-mini").
+      // TODO: Verify if BuiltInAgent can use OpenRouter. The model string format
+      // "openai/gpt-4o-mini" suggests it might support OpenRouter's provider/model
+      // syntax, but BuiltInAgent may have its own internal LLM client that only
+      // connects to native providers. If it requires a native OpenAI key, this
+      // chat path will need OPENAI_API_KEY set (unlike the rest of the backend,
+      // which now uses OpenRouter as primary). Check CopilotKit docs or test.
       model: process.env.LLM_MODEL || "openai/gpt-4o-mini",
       tools,
       maxSteps: 8, // default is 1 — too low to chain search → cite → fill
