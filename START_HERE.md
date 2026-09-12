@@ -11,6 +11,7 @@ Team Tuhame — Research Room, for AI Tinkerers Nairobi (12 Sept 2026).
 3. `docs/TESTING_AND_DEPLOYMENT.md` — how to run it locally, step by step.
 
 Then, for reference as you build:
+
 - `backend/docs/DAY_PLAN.md` — hour-by-hour, team split, cut ladder.
 - `backend/docs/ARCHITECTURE.md` — how backend + extension fit together.
 - `CHANGELOG.md` — what changed and why, across the prep sessions. Read the
@@ -33,3 +34,10 @@ browser-native features (search recognition, page badges, highlight-to-note
 
 - `backend/` — Next.js API + agent runtime. Deploys to Cloud Run.
 - `extension/` — Chrome/Edge MV3 side panel. The UI.
+
+cd extension && npm run build — this produces the extension/dist/ folder. Confirm that folder exists and has a manifest.json inside it.
+Open chrome://extensions (or edge://extensions).
+Turn on Developer mode — toggle, top-right. Nothing loads without this.
+Click Load unpacked (top-left) and select the extension/dist folder — not the extension/ root, the dist subfolder specifically. This is the most common mistake.
+Now it appears in the list, as "Research Room." Pin it (the puzzle-piece icon in the toolbar → pin) so the icon is visible.
+Click the icon → the side panel should open.
