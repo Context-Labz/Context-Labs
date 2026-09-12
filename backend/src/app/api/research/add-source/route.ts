@@ -70,6 +70,11 @@ export async function POST(req: Request) {
         })
         .join("\n");
 
+      // origin/main's real find: naming the legal ids stops the model
+      // inventing an objectiveId. The rest of its hand-written JSON shape is
+      // redundant now that structured() serialises the Zod schema itself.
+      const availableIds = openObjectives.map((o) => o.id).join(", ");
+
       let result;
       try {
         result = await structured(
@@ -78,7 +83,8 @@ export async function POST(req: Request) {
             "evidence for, return a match with a verbatim quote — never invent a value or quote. The quote must be copied " +
             "character-for-character from the page text; a paraphrase will be rejected and the evidence discarded. Skip " +
             "objectives the page says nothing about. If the page's value conflicts with an objective's existing evidence, set " +
-            "contradictsExisting=true and explain the conflict in contradictionNote — do NOT silently treat it as agreement.",
+            "contradictsExisting=true and explain the conflict in contradictionNote — do NOT silently treat it as agreement.\n\n" +
+            `objectiveId MUST be exactly one of: ${availableIds}`,
           `Objectives:\n${objectivesContext}\n\nPage text:\n${pageText}`
         );
       } catch (err) {
@@ -91,9 +97,15 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: `objective matching failed: ${message}`, workspace: ws }, { status: 502 });
       }
 
+      // Defensive: a model can satisfy the schema and still return blank
+      // strings. Drop those rather than recording empty evidence.
+      const validMatches = result.matches.filter(
+        (m) => m.objectiveId && m.value && m.quote && m.summary
+      );
+
       let contradictionCount = 0;
       let rejectedCount = 0;
-      for (const match of result.matches) {
+      for (const match of validMatches) {
         const obj = ws.objectives.find((o) => o.id === match.objectiveId);
         if (!obj) continue; // model referenced an id we didn't offer — ignore rather than crash
 
@@ -131,9 +143,9 @@ export async function POST(req: Request) {
           logActivity(ws, "table", `${obj.label}: ${match.confidence} confidence from captured page`);
         }
       }
-      if (!result.matches.length) {
+      if (!validMatches.length) {
         logActivity(ws, "search", "Captured page didn't match any open objective.");
-      } else if (rejectedCount && rejectedCount === result.matches.length) {
+      } else if (rejectedCount && rejectedCount === validMatches.length) {
         logActivity(ws, "warn", "Every claim from this page failed quote verification — nothing recorded.");
       }
       if (contradictionCount) {

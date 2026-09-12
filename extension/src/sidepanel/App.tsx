@@ -18,11 +18,24 @@ import CapturePageButton from "./components/CapturePageButton";
 const DEFAULT_COLUMNS: string[] = [];
 const STORAGE_KEY = "research-room:workspace-id";
 
+// Plain string matching against a per-objective vocabulary — deliberately NO
+// AI in the panel. Keys must match the objective labels the backend seeds.
+const OBJECTIVE_KEYWORDS: Record<string, string[]> = {
+  "Market Size": ["market size", "market value", "tam", "billion", "valued at"],
+  "Competition": ["competitor", "vs", "alternative", "rival", "market share"],
+  "Customer Demand": ["demand", "customers want", "adoption", "growth rate"],
+  "Pricing": ["price", "pricing", "per month", "fee", "subscription", "$", "kes"],
+  "Team & Execution": ["founder", "ceo", "co-founder", "team", "leadership"],
+  "Regulatory & Distribution Risk": ["regulation", "license", "compliance", "law", "distribution"],
+};
+
 export default function App() {
   const [ws, setWs] = useState<ResearchWorkspace | null>(null);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [detectedQuery, setDetectedQuery] = useState<string | null>(null);
+  const [relevantObjective, setRelevantObjective] = useState<string | null>(null);
+  const [capturing, setCapturing] = useState(false);
 
   // FIX (was gap #2 in the review): a workspace must exist on the backend
   // before anything else touches it. This is the one explicit place that
@@ -59,16 +72,67 @@ export default function App() {
   // Persist through the same api.setQuestion path the header uses. Upstream
   // wrote this into a local `question` input, but that second input was removed
   // precisely so the header stays the single source of truth for the question.
-  const trackSearch = async () => {
-    if (!detectedQuery || !ws) return;
-    setWs(await api.setQuestion(ws.id, detectedQuery));
-    setDetectedQuery(null);
+  // Keyword badge: ask the active tab for its text and see whether it hits any
+  // objective vocabulary. Search result pages are skipped — the query banner
+  // already covers those, and a SERP is not evidence.
+  useEffect(() => {
+    const checkPageRelevance = async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) return;
+        const url = tab.url || "";
+        if (/[?&]q=/.test(url) && /google\.|bing\./.test(url)) return;
+
+        chrome.tabs.sendMessage(tab.id, { type: "GET_PAGE_TEXT" }, (response) => {
+          // lastError fires on pages the content script can't run in
+          // (chrome://, the web store). Read it so it isn't logged as unchecked.
+          if (chrome.runtime.lastError || !response?.text) {
+            setRelevantObjective(null);
+            return;
+          }
+          const text = String(response.text).toLowerCase();
+          const hit = Object.entries(OBJECTIVE_KEYWORDS).find(([, keywords]) =>
+            keywords.some((kw) => text.includes(kw.toLowerCase()))
+          );
+          setRelevantObjective(hit ? hit[0] : null);
+        });
+      } catch {
+        setRelevantObjective(null);
+      }
+    };
+
+    checkPageRelevance();
+    chrome.tabs.onUpdated.addListener(checkPageRelevance);
+    chrome.tabs.onActivated.addListener(checkPageRelevance);
+    return () => {
+      chrome.tabs.onUpdated.removeListener(checkPageRelevance);
+      chrome.tabs.onActivated.removeListener(checkPageRelevance);
+    };
+  }, []);
+
+  // One capture path for both banners.
+  const captureCurrentPage = () => {
+    if (!ws) return;
+    setCapturing(true);
+    chrome.runtime.sendMessage({ type: "CAPTURE_PAGE" }, async (page) => {
+      if (!page || page.error) {
+        alert(page?.error ?? "Could not read the current page.");
+        setCapturing(false);
+        return;
+      }
+      try {
+        await api.addCapturedSource(ws.id, { title: page.title, url: page.url, text: page.bodyText }, undefined);
+        setDetectedQuery(null);
+        setRelevantObjective(null);
+        refresh();
+      } catch {
+        alert("Couldn't save this page — check the backend logs.");
+      } finally {
+        setCapturing(false);
+      }
+    });
   };
 
-  // Re-fetch, and self-heal if the backend no longer knows this workspace.
-  // The store is in-memory server-side, so a backend restart invalidates the id
-  // this panel saved in chrome.storage — without this, every later call fails
-  // and the panel gives no clue why.
   const refresh = async () => {
     if (!ws) return;
     try {
@@ -113,10 +177,26 @@ export default function App() {
               🔍 You searched: “<strong>{detectedQuery}</strong>”
             </span>
             <button
-              onClick={trackSearch}
-              className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 whitespace-nowrap"
+              onClick={captureCurrentPage}
+              disabled={capturing}
+              className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
             >
-              Track this search
+              {capturing ? "Capturing…" : "Capture"}
+            </button>
+          </div>
+        )}
+
+        {relevantObjective && (
+          <div className="flex items-center justify-between gap-2 p-2 bg-green-50 border border-green-200 rounded">
+            <span className="text-sm">
+              📄 This page looks relevant to <strong>{relevantObjective}</strong>
+            </span>
+            <button
+              onClick={captureCurrentPage}
+              disabled={capturing}
+              className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 whitespace-nowrap"
+            >
+              {capturing ? "Capturing…" : "Capture"}
             </button>
           </div>
         )}

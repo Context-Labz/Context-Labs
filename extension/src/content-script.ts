@@ -12,6 +12,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       bodyText: selection || document.body.innerText.slice(0, 8000),
     });
   }
+
+  if (msg?.type === "GET_PAGE_TEXT") {
+    const text = document.body?.innerText?.slice(0, 4000) ?? "";
+    sendResponse({
+      title: document.title,
+      url: window.location.href,
+      text,
+    });
+  }
 });
 
 // Search recognition: detect Google/Bing search queries and notify the panel
