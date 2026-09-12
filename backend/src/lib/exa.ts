@@ -59,7 +59,9 @@ function mockSearch(query: string, numResults: number): ExaResult[] {
     return { item, score };
   }).sort((a, b) => b.score - a.score);
 
-  const picked = (scored[0].score > 0 ? scored.filter((s) => s.score > 0) : scored)
+  const best = scored[0]?.score ?? 0;
+  const threshold = best >= 2 ? 2 : best > 0 ? 1 : 0;
+  const picked = (threshold > 0 ? scored.filter((s) => s.score >= threshold) : scored)
     .slice(0, numResults)
     .map((s) => s.item);
 

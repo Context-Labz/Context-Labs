@@ -4,7 +4,7 @@ export const OBJECTIVE_KEYWORDS: Record<string, string[]> = {
   "Market Size": ["market size", "market value", "tam", "sam", "billion", "million", "valued at", "cagr", "growth rate"],
   Competition: ["competitor", "vs", "versus", "alternative", "rival", "market share", "incumbent", "landscape"],
   "Customer Demand": ["demand", "customers want", "adoption", "users", "buyers", "willingness to pay", "pain point"],
-  Pricing: ["price", "pricing", "per month", "fee", "subscription", "kes", "usd", "ticket", "asp", "cost"],
+  Pricing: ["price", "pricing", "per month", "fee", "subscription", "ticket", "asp", "average selling", "wholesale"],
   "Team & Execution": ["founder", "ceo", "co-founder", "team", "leadership", "hired", "background"],
   "Regulatory & Distribution Risk": ["regulation", "license", "compliance", "law", "cbk", "distribution", "import duty"],
   Overview: ["overview", "introduction", "what is", "background"],
