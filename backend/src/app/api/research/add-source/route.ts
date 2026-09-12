@@ -48,9 +48,10 @@ export async function POST(req: Request) {
   ws.sources.push(source);
   logActivity(ws, "search", `Captured from browser: ${source.title}`);
 
-  // Path 1: research-plan mode (default). Check this page against every
-  // objective that isn't already at high confidence, in one LLM call.
-  if (ws.objectives.length && text) {
+  try {
+    // Path 1: research-plan mode (default). Check this page against every
+    // objective that isn't already at high confidence, in one LLM call.
+    if (ws.objectives.length && text) {
     const openObjectives = ws.objectives.filter((o) => o.confidence !== "high");
     if (openObjectives.length) {
       const objectivesContext = openObjectives
@@ -126,4 +127,26 @@ ${String(text).slice(0, 4000)}`
 
   putWorkspace(ws);
   return NextResponse.json(ws);
+  } catch (err: any) {
+    // Log the actual LLM/OpenRouter error for debugging
+    console.error("add-source LLM call failed:", {
+      status: err?.status,
+      message: err?.message,
+      error: err?.error,
+      type: err?.type,
+      code: err?.code,
+    });
+
+    // Return the real error to the extension so it's visible in the popup/network tab
+    const errorMessage = err?.message || err?.error?.message || "LLM call failed";
+    const errorDetails = err?.status ? ` (HTTP ${err.status})` : "";
+
+    return NextResponse.json(
+      {
+        error: `${errorMessage}${errorDetails}`,
+        details: err?.error || undefined,
+      },
+      { status: 500 }
+    );
+  }
 }

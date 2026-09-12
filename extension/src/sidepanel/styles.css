@@ -1,3 +1,52 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Custom styling for CopilotKit send button - comprehensive selectors for v2 */
+/* CopilotKit v2 uses various button structures, targeting them all */
+
+/* Primary targets: any button in the chat input area */
+div[class*="input"] button:not(:disabled),
+div[class*="Input"] button:not(:disabled),
+div[class*="chat"] button[type="button"]:not(:disabled),
+div[class*="Chat"] button[type="button"]:not(:disabled),
+button[class*="send"]:not(:disabled),
+button[class*="Send"]:not(:disabled),
+button[class*="submit"]:not(:disabled),
+button[class*="Submit"]:not(:disabled) {
+  background-color: #059669 !important; /* emerald-600 */
+  color: white !important;
+  transition: background-color 0.2s ease !important;
+  border-radius: 0.5rem !important;
+}
+
+div[class*="input"] button:not(:disabled):hover,
+div[class*="Input"] button:not(:disabled):hover,
+div[class*="chat"] button[type="button"]:not(:disabled):hover,
+button[class*="send"]:not(:disabled):hover,
+button[class*="Send"]:not(:disabled):hover {
+  background-color: #047857 !important; /* emerald-700 */
+}
+
+/* Disabled state - gray */
+div[class*="input"] button:disabled,
+div[class*="Input"] button:disabled,
+div[class*="chat"] button:disabled,
+button[class*="send"]:disabled,
+button[class*="Send"]:disabled {
+  background-color: #d4d4d8 !important; /* zinc-300 */
+  color: #a1a1aa !important; /* zinc-400 */
+  opacity: 0.6 !important;
+}
+
+/* Nuclear option: target ALL buttons in CopilotKit's sidebar that aren't explicitly styled */
+[class*="copilot"] button:not([class*="close"]):not([class*="Close"]):not(:disabled) {
+  background-color: #059669 !important;
+  color: white !important;
+}
+
+[class*="copilot"] button:not([class*="close"]):not([class*="Close"]):disabled {
+  background-color: #d4d4d8 !important;
+  color: #a1a1aa !important;
+  opacity: 0.6 !important;
+}
