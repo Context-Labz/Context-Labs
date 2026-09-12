@@ -45,8 +45,20 @@ export default function App() {
     })().finally(() => setLoading(false));
   }, []);
 
+  // Re-fetch, and self-heal if the backend no longer knows this workspace.
+  // The store is in-memory server-side, so a backend restart invalidates the id
+  // this panel saved in chrome.storage — without this, every later call fails
+  // and the panel gives no clue why.
   const refresh = async () => {
-    if (ws) setWs(await api.getWorkspace(ws.id));
+    if (!ws) return;
+    try {
+      setWs(await api.getWorkspace(ws.id));
+    } catch (err) {
+      if (!String(err).includes("404")) throw err;
+      const created = await api.createWorkspace("", DEFAULT_COLUMNS);
+      await chrome.storage.local.set({ [STORAGE_KEY]: created.id });
+      setWs(created);
+    }
   };
 
   const runAutomatically = async () => {

@@ -22,6 +22,7 @@
 // get created. Verified this resolves it — see CHANGELOG.md for the
 // before/after curl output.
 import { ResearchWorkspace } from "./types";
+import { seedWorkspace } from "./seed";
 
 const g = globalThis as unknown as { __researchRoomStore?: Map<string, ResearchWorkspace> };
 const store = g.__researchRoomStore ?? (g.__researchRoomStore = new Map<string, ResearchWorkspace>());
@@ -29,6 +30,28 @@ const store = g.__researchRoomStore ?? (g.__researchRoomStore = new Map<string, 
 export function getWorkspace(id: string): ResearchWorkspace {
   const ws = store.get(id);
   if (!ws) throw new Error(`Workspace not found: ${id}`);
+  return ws;
+}
+
+// Self-healing lookup for the AGENT paths (chat tools, page capture).
+//
+// This store lives in process memory, so every backend restart — a deploy, a
+// crash, an edit in dev — empties it. The side panel meanwhile keeps its
+// workspace id in chrome.storage and has no idea. The result was that the panel
+// looked fine, but every tool call threw "Workspace not found", produced no
+// TOOL_CALL_RESULT, and the model improvised an apology about "an issue with
+// the workspace" — a confusing failure with nothing in the server log, and one
+// that would happen mid-demo the first time the backend was restarted.
+//
+// Re-seeding under the SAME id keeps the panel's saved id valid: it refreshes
+// into a fresh, empty board, which is the honest state after a restart. This
+// is the same defensive re-seed /api/research/start already did.
+export function getOrCreateWorkspace(id: string): ResearchWorkspace {
+  const existing = store.get(id);
+  if (existing) return existing;
+  const ws = seedWorkspace(id, "", []);
+  logActivity(ws, "warn", "Workspace was missing (backend restarted) — re-created empty.");
+  store.set(id, ws);
   return ws;
 }
 

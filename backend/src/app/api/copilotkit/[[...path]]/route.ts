@@ -30,11 +30,12 @@ import {
   defineTool,
   type BuiltInAgentModel,
 } from "@copilotkit/runtime/v2";
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { createOpenAI } from "@ai-sdk/openai";
 import type { LanguageModel } from "ai";
+import { createRetryingFetch } from "@/lib/http";
 import { z } from "zod";
 import { exaSearch } from "@/lib/exa";
-import { getWorkspace, putWorkspace, logActivity, makeId } from "@/lib/workspace-store";
+import { getOrCreateWorkspace, putWorkspace, logActivity, makeId } from "@/lib/workspace-store";
 import { quoteIsGrounded } from "@/lib/verify";
 import { ResearchWorkspace, TableCell } from "@/lib/types";
 
@@ -95,7 +96,7 @@ const tools = [
       excerpt: z.string(),
     }),
     execute: async ({ workspaceId, title, url, excerpt }) => {
-      const ws = getWorkspace(workspaceId);
+      const ws = getOrCreateWorkspace(workspaceId);
       const source = { id: makeId("src"), title, url, excerpt, fetchedAt: new Date().toISOString(), claims: [] as string[] };
       ws.sources.push(source);
       logActivity(ws, "search", `Source added: ${title}`);
@@ -116,7 +117,7 @@ const tools = [
       quote: z.string().describe("Verbatim excerpt from the source that supports this value"),
     }),
     execute: async ({ workspaceId, provider, column, value, sourceId, quote }) => {
-      const ws = getWorkspace(workspaceId);
+      const ws = getOrCreateWorkspace(workspaceId);
       const problem = citationProblem(ws, sourceId, quote);
       if (problem) throw new Error(problem); // surfaced to the model so it can correct itself
       let row = ws.table.rows.find((r) => r.provider === provider);
@@ -134,7 +135,7 @@ const tools = [
     description: "Flag a table cell you could not verify from any source. Always tell the human you've flagged it and ask how to proceed.",
     parameters: z.object({ workspaceId: z.string(), provider: z.string(), column: z.string(), reason: z.string() }),
     execute: async ({ workspaceId, provider, column, reason }) => {
-      const ws = getWorkspace(workspaceId);
+      const ws = getOrCreateWorkspace(workspaceId);
       ws.gaps.push({ id: makeId("gap"), provider, column, reason, status: "open" });
       logActivity(ws, "warn", `Gap flagged: ${provider} / ${column}`);
       putWorkspace(ws);
@@ -159,7 +160,7 @@ const tools = [
       summary: z.string().describe("One-sentence updated synthesis for this objective given all evidence so far"),
     }),
     execute: async ({ workspaceId, objectiveId, value, sourceId, quote, confidence, summary }) => {
-      const ws = getWorkspace(workspaceId);
+      const ws = getOrCreateWorkspace(workspaceId);
       const obj = ws.objectives.find((o) => o.id === objectiveId);
       if (!obj) throw new Error(`Unknown objective id: ${objectiveId}. Use an id from your context, don't invent one.`);
       const problem = citationProblem(ws, sourceId, quote);
@@ -184,7 +185,7 @@ const tools = [
       sourceIdB: z.string(), quoteB: z.string(), valueB: z.string(),
     }),
     execute: async ({ workspaceId, objectiveId, note, sourceIdA, quoteA, valueA, sourceIdB, quoteB, valueB }) => {
-      const ws = getWorkspace(workspaceId);
+      const ws = getOrCreateWorkspace(workspaceId);
       const obj = ws.objectives.find((o) => o.id === objectiveId);
       if (!obj) throw new Error(`Unknown objective id: ${objectiveId}`);
       const problemA = citationProblem(ws, sourceIdA, quoteA);
@@ -209,7 +210,7 @@ const tools = [
     description: "Write or update the final research brief in markdown.",
     parameters: z.object({ workspaceId: z.string(), markdown: z.string() }),
     execute: async ({ workspaceId, markdown }) => {
-      const ws = getWorkspace(workspaceId);
+      const ws = getOrCreateWorkspace(workspaceId);
       ws.report = markdown;
       logActivity(ws, "report", "Draft report generated.");
       putWorkspace(ws);
@@ -271,13 +272,27 @@ function agentModel(): BuiltInAgentModel | LanguageModel {
 function openRouterOr(modelId: string): BuiltInAgentModel | LanguageModel {
   const key = process.env.OPENROUTER_API_KEY?.trim();
   if (key && !key.startsWith("your_")) {
-    return createOpenAICompatible({
+    // @ai-sdk/openai (NOT @ai-sdk/openai-compatible): against ai@6 the
+    // openai-compatible provider only implements LanguageModelV2, so the SDK
+    // silently drops into "v2 specification compatibility mode" — which streams
+    // plain text fine but never emitted tool calls, so any request needing a
+    // tool hung after RUN_STARTED with no error. @ai-sdk/openai speaks V3
+    // natively, no shim.
+    //
+    // .chat() = Chat Completions, which OpenRouter implements. The provider's
+    // default callable and .responses() use the Responses API, which it does
+    // not — so the method here is load-bearing, not stylistic.
+    return createOpenAI({
       name: "openrouter",
       // Overridable so this can point at any OpenAI-compatible endpoint (a
       // proxy, a local model server) without a code change.
       baseURL: process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1",
       apiKey: key,
-    }).chatModel(modelId);
+      // Measured ~50% of requests to openrouter.ai stall with zero bytes
+      // returned. Without this a stalled call is a silent, indefinite hang in
+      // the chat sidebar. See lib/http.ts.
+      fetch: createRetryingFetch(),
+    }).chat(modelId);
   }
   return modelId as BuiltInAgentModel;
 }

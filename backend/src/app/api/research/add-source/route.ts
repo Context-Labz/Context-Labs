@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getWorkspace, putWorkspace, logActivity, makeId } from "@/lib/workspace-store";
+import { getOrCreateWorkspace, putWorkspace, logActivity, makeId } from "@/lib/workspace-store";
 import { structured } from "@/lib/llm";
 import { quoteIsGrounded } from "@/lib/verify";
 import { TableCell } from "@/lib/types";
@@ -34,12 +34,10 @@ const objectiveMatchSchema = z.object({
 
 export async function POST(req: Request) {
   const { workspaceId, title, url, text, provider } = await req.json();
-  let ws;
-  try {
-    ws = getWorkspace(workspaceId);
-  } catch {
-    return NextResponse.json({ error: `workspace not found: ${workspaceId}` }, { status: 404 });
-  }
+  // Self-healing: the in-memory store is emptied by any backend restart while
+  // the side panel keeps its id in chrome.storage. Re-seed under the same id
+  // rather than 404ing, so "Capture this page" keeps working after a restart.
+  const ws = getOrCreateWorkspace(workspaceId);
 
   // The exact string the model is shown. Quote verification below must check
   // against THIS, not the full page text — a quote from beyond the cut-off is

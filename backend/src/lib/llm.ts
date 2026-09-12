@@ -6,6 +6,12 @@
 import OpenAI from "openai";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
+import { createRetryingFetch } from "./http";
+
+// Calls to openrouter.ai stall (zero bytes back) roughly half the time from
+// this network — see lib/http.ts. Without a deadline the capture and auto-run
+// paths hang indefinitely instead of returning an error.
+const resilientFetch = createRetryingFetch();
 
 // OpenRouter model string format: "provider/model" (e.g., "openai/gpt-4o-mini").
 // This is different from bare OpenAI model names.
@@ -24,7 +30,9 @@ function primary(): OpenAI {
   if (!_primary) {
     _primary = new OpenAI({
       apiKey: process.env.OPENROUTER_API_KEY,
-      baseURL: "https://openrouter.ai/api/v1",
+      baseURL: process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1",
+      fetch: resilientFetch,
+      maxRetries: 0, // retries are handled inside resilientFetch, not here
     });
   }
   return _primary;
