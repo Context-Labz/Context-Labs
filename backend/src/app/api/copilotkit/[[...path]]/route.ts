@@ -250,11 +250,18 @@ function agentModel(): string {
 const runtime = new CopilotRuntime({
   agents: {
     default: new BuiltInAgent({
-      // NOTE the separate env var. This agent needs a PROVIDER-PREFIXED model
-      // ("openai/gpt-4o-mini"); lib/llm.ts's OpenAI SDK calls need the bare
-      // name ("gpt-4o-mini"). They used to share LLM_MODEL, which cannot
-      // satisfy both — setting LLM_MODEL=gpt-4o-mini for the SDK path made
-      // every chat run die with RUN_ERROR: Invalid model string "gpt-4o-mini".
+      // TODO (from the OpenRouter switch): verify BuiltInAgent can reach
+      // OpenRouter at all. The rest of the backend now uses OpenRouter as
+      // primary, but BuiltInAgent may use its own internal client that only
+      // talks to native providers — in which case this chat path still needs
+      // OPENAI_API_KEY set, and COPILOT_AGENT_MODEL must stay inside the
+      // enum below rather than being any OpenRouter model string.
+      // NOTE the separate env var. Both this agent and lib/llm.ts now want a
+      // provider-prefixed string, but they validate against DIFFERENT lists:
+      // llm.ts accepts anything in OpenRouter's catalogue, while this agent
+      // accepts only the BuiltInAgentModel union below. Sharing one var means
+      // any OpenRouter-only model set for llm.ts kills every chat run with
+      // RUN_ERROR: Invalid model string. Keep them separate.
       // Valid values are the BuiltInAgentModel union in
       // @copilotkit/runtime@1.71.0: openai/gpt-5, openai/gpt-5-mini,
       // openai/gpt-4.1{,-mini,-nano}, openai/gpt-4o{,-mini}, openai/o3{,-mini},

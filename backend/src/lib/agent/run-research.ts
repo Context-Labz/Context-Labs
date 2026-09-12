@@ -187,7 +187,7 @@ export async function draftReport(workspaceId: string) {
     .map((r) => `${r.provider}: ${ws.table.columns.map((c) => `${c}=${r.cells[c]?.value || "?"}`).join(", ")}`)
     .join("\n");
   const res = await chat({
-    model: process.env.LLM_MODEL || "gpt-4o-mini", // OpenAI SDK call — no provider prefix here, unlike the CopilotKit BuiltInAgent model string
+    model: process.env.LLM_MODEL || "openai/gpt-4o-mini", // routed through lib/llm.ts -> OpenRouter, which REQUIRES a provider prefix
     messages: [
       { role: "system", content: "Write a concise research brief from the verified table. Explicitly mention gaps and unverified cells. No unsourced claims." },
       { role: "user", content: `Question: ${ws.question}
