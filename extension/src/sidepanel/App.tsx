@@ -33,6 +33,7 @@ export default function App() {
   const [relevantObjective, setRelevantObjective] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
   const [capturedUrls, setCapturedUrls] = useState<Set<string>>(new Set());
+  const [highlightedText, setHighlightedText] = useState<{ text: string; url: string; title: string } | null>(null);
 
   // FIX (was gap #2 in the review): a workspace must exist on the backend
   // before anything else touches it. This is the one explicit place that
@@ -57,16 +58,25 @@ export default function App() {
     })().finally(() => setLoading(false));
   }, []);
 
-  // Listen for search query detection from content script
+  // Listen for search query detection and highlight detection from content script
   useEffect(() => {
     const handleMessage = (msg: any) => {
       if (msg?.type === "SEARCH_DETECTED" && msg?.query) {
         setDetectedQuery(msg.query);
       }
+      if (msg?.type === "HIGHLIGHT_DETECTED" && msg?.text) {
+        setHighlightedText({ text: msg.text, url: msg.url, title: msg.title });
+      }
+      if (msg?.type === "LINK_CLICKED" && msg?.url && ws) {
+        // Log link click to activity feed
+        api.logLinkClick(ws.id, msg.url, msg.text, msg.pageUrl).catch(() => {
+          // Silent fail - link tracking is best-effort
+        });
+      }
     };
     chrome.runtime.onMessage.addListener(handleMessage);
     return () => chrome.runtime.onMessage.removeListener(handleMessage);
-  }, []);
+  }, [ws]);
 
   // Check current page for objective relevance
   useEffect(() => {
@@ -188,6 +198,33 @@ export default function App() {
     });
   };
 
+  // Capture highlighted text as evidence
+  const captureHighlight = async () => {
+    if (!ws || !highlightedText) return;
+    setCapturing(true);
+    try {
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Capture timeout")), 20000)
+      );
+      await Promise.race([
+        api.addCapturedSource(
+          ws.id,
+          { title: highlightedText.title, url: highlightedText.url, text: highlightedText.text },
+          undefined
+        ),
+        timeoutPromise,
+      ]);
+      setHighlightedText(null);
+      refresh();
+    } catch (err: any) {
+      alert(err?.message === "Capture timeout"
+        ? "Highlight capture timed out — try again."
+        : "Couldn't save highlight — check the backend logs.");
+    } finally {
+      setCapturing(false);
+    }
+  };
+
   if (loading || !ws) {
     return <div className="p-4 text-sm text-zinc-500">Loading workspace…</div>;
   }
@@ -223,6 +260,29 @@ export default function App() {
           >
             {capturing ? "Capturing…" : "Capture"}
           </button>
+        </div>
+      )}
+
+      {highlightedText && (
+        <div className="flex items-center justify-between gap-2 p-2 bg-yellow-50 border border-yellow-200 rounded">
+          <span className="text-sm">
+            ✏️ Highlighted: "{highlightedText.text.slice(0, 60)}..."
+          </span>
+          <div className="flex gap-1">
+            <button
+              onClick={() => captureHighlight()}
+              disabled={capturing}
+              className="px-2 py-1 text-xs bg-yellow-600 text-white rounded hover:bg-yellow-700 disabled:opacity-50 whitespace-nowrap"
+            >
+              {capturing ? "Saving…" : "Save"}
+            </button>
+            <button
+              onClick={() => setHighlightedText(null)}
+              className="px-2 py-1 text-xs bg-gray-400 text-white rounded hover:bg-gray-500 whitespace-nowrap"
+            >
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 

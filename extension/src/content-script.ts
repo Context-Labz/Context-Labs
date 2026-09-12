@@ -38,25 +38,36 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 })();
 
-// ─────────────────────────────────────────────────────────────────────────
-// TOMORROW (build during event) — ambient recognition. See AGENT_VISION.md
-// "The agent we're actually building". These are the browser-native, NO-AI
-// features that make this more than a docked chatbox. Intentionally left as
-// stubs so the scaffold builds clean and these are net-new commits tomorrow.
-//
-// #1 SEARCH RECOGNITION: on a Google/Bing results page, read the query from
-//    the URL (?q=) and message the panel to map it to an objective. No AI.
-//      e.g. const q = new URL(location.href).searchParams.get("q");
-//
-// #2 PAGE KEYWORD BADGE: on page load, plain keyword-match document.body
-//    text against a small per-objective vocabulary (fetch the current
-//    objectives from the panel/backend), and if it hits, message the panel
-//    to show a "looks like evidence for <objective> — save?" badge. Only
-//    AFTER the user confirms does the panel call /api/research/add-source.
-//    No AI in THIS file — the LLM extraction stays server-side, gated on
-//    confirmation.
-//
-// Guardrail (product + Usefulness rubric): only run the above while the
-// side panel is open ("research mode"), and never auto-send page text —
-// propose, let the analyst confirm. VC deal flow is confidential.
-// ─────────────────────────────────────────────────────────────────────────
+// Text selection capture: when user highlights text, offer to save as evidence
+document.addEventListener("mouseup", () => {
+  const selection = window.getSelection();
+  const selectedText = selection?.toString().trim() ?? "";
+
+  // Only notify if there's actual text selected (at least 10 chars)
+  if (selectedText.length >= 10) {
+    chrome.runtime.sendMessage({
+      type: "HIGHLIGHT_DETECTED",
+      text: selectedText,
+      url: window.location.href,
+      title: document.title,
+    });
+  }
+});
+
+// Link click tracking: log clicked links to activity feed
+document.addEventListener("click", (e) => {
+  const target = e.target as HTMLElement;
+  const link = target.closest("a");
+
+  if (link?.href) {
+    // Skip internal anchors and javascript: links
+    if (link.href.startsWith("#") || link.href.startsWith("javascript:")) return;
+
+    chrome.runtime.sendMessage({
+      type: "LINK_CLICKED",
+      url: link.href,
+      text: link.textContent?.trim() || link.href,
+      pageUrl: window.location.href,
+    });
+  }
+});

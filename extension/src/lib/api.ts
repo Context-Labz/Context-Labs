@@ -50,4 +50,11 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ workspaceId, title: page.title, url: page.url, text: page.text, provider }),
     }).then((r) => asJson<ResearchWorkspace>(r)),
+
+  logLinkClick: (workspaceId: string, url: string, text: string, pageUrl: string) =>
+    fetch(`${BACKEND_URL}/api/research/log-link`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId, url, text, pageUrl }),
+    }).then((r) => asJson<void>(r)),
 };
