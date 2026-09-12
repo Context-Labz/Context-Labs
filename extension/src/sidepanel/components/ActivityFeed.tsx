@@ -1,18 +1,26 @@
 import { ResearchWorkspace } from "@/lib/types";
 
-const icon: Record<string, string> = {
-  spark: "✨", plan: "🧭", search: "🔎", table: "📊", warn: "⚠️", human: "👤", report: "📝",
-};
-
+// Emoji per line read as noise next to the rest of the panel, and seven
+// different ones carried no system. A coloured dot keyed to the kind of event
+// uses the palette already in play: teal for things recorded, pale teal for
+// searching, warm for anything that needs a person.
 export default function ActivityFeed({ ws }: { ws: ResearchWorkspace }) {
+  const items = [...ws.activity].reverse();
+
   return (
-    <section className="bg-white rounded-lg border p-4">
-      <h2 className="font-medium mb-2">Agent activity</h2>
-      <ul className="space-y-1 text-sm text-zinc-700 max-h-64 overflow-y-auto">
-        {[...ws.activity].reverse().map((a, i) => (
-          <li key={i}>{icon[a.icon] ?? "•"} {a.text}</li>
-        ))}
-      </ul>
-    </section>
+    <ul className="space-y-2 max-h-56 overflow-y-auto">
+      {items.map((a, i) => (
+        <li key={i} className="flex gap-2.5">
+          <span className="dot" data-kind={a.icon} />
+          <span
+            className="t-meta"
+            style={{ color: a.icon === "warn" ? "var(--conflict)" : "var(--ink-soft)" }}
+          >
+            {a.text}
+          </span>
+        </li>
+      ))}
+      {items.length === 0 && <li className="t-meta">Nothing yet.</li>}
+    </ul>
   );
 }

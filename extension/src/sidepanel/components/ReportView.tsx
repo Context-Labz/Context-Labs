@@ -1,14 +1,18 @@
 import { ResearchWorkspace } from "@/lib/types";
 
+// The memo is prose the agent wrote, so it's set in the reading face rather
+// than the <pre> block it used to be — a monospace dump made a finished
+// deliverable look like console output.
 export default function ReportView({ ws }: { ws: ResearchWorkspace }) {
+  if (!ws.report) {
+    return <p className="t-meta">The memo drafts itself once objectives have evidence behind them.</p>;
+  }
   return (
-    <section className="bg-white rounded-lg border p-4">
-      <h2 className="font-medium mb-2">Report</h2>
-      {ws.report ? (
-        <pre className="whitespace-pre-wrap text-sm text-zinc-800">{ws.report}</pre>
-      ) : (
-        <p className="text-sm text-zinc-400">Report appears here once research completes.</p>
-      )}
-    </section>
+    <div
+      className="t-summary whitespace-pre-wrap"
+      style={{ color: "var(--ink)", fontSize: "14px", lineHeight: 1.6 }}
+    >
+      {ws.report}
+    </div>
   );
 }

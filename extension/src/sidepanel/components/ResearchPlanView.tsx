@@ -1,58 +1,137 @@
-import { ResearchWorkspace } from "@/lib/types";
+import { ResearchWorkspace, Objective, ObjectiveConfidence } from "@/lib/types";
 import { api } from "@/lib/api";
 
-const confidenceStyle: Record<string, string> = {
-  none: "bg-zinc-100 text-zinc-500",
-  low: "bg-rose-100 text-rose-700",
-  medium: "bg-amber-100 text-amber-700",
-  high: "bg-emerald-100 text-emerald-700",
+// How many of the three meter segments are lit at each level.
+const FILLED: Record<ObjectiveConfidence, number> = { none: 0, low: 1, medium: 2, high: 3 };
+
+const LEVEL_WORD: Record<ObjectiveConfidence, string> = {
+  none: "no evidence",
+  low: "low",
+  medium: "medium",
+  high: "high",
 };
 
-// The research-plan layer: a fixed objective checklist that evidence maps
-// into as the user browses, instead of one open-ended synthesized answer.
-// This is the component that carries the "what does the extension know
-// because we're browsing that ChatGPT doesn't" argument — see CHANGELOG.md.
-export default function ResearchPlanView({ ws, onResolved }: { ws: ResearchWorkspace; onResolved: (ws: ResearchWorkspace) => void }) {
+// Three stacked segments, filled bottom-up by confidence. This is the panel's
+// one bold element and it earns the space: run your eye down the left edge and
+// you read where the investigation is solid and where it's empty — the
+// "strong on demand, nothing on team" read that a standing research plan gives
+// you and a one-shot answer can't.
+function Meter({ level, conflicted }: { level: ObjectiveConfidence; conflicted: boolean }) {
+  const filled = FILLED[level];
+  return (
+    <div className="meter" data-level={level} data-conflict={conflicted} aria-hidden="true">
+      {[0, 1, 2].map((i) => (
+        <div key={i} className="meter-seg" data-on={i < filled} />
+      ))}
+    </div>
+  );
+}
+
+export default function ResearchPlanView({
+  ws,
+  onResolved,
+}: {
+  ws: ResearchWorkspace;
+  onResolved: (ws: ResearchWorkspace) => void;
+}) {
   if (!ws.objectives.length) return null;
 
-  const resolve = (objectiveId: string, contradictionId: string, decision: "keep_a" | "keep_b" | "needs_more_research") => {
-    api.resolveContradiction(ws.id, objectiveId, contradictionId, decision)
+  const resolve = (
+    objectiveId: string,
+    contradictionId: string,
+    decision: "keep_a" | "keep_b" | "needs_more_research"
+  ) => {
+    api
+      .resolveContradiction(ws.id, objectiveId, contradictionId, decision)
       .then(onResolved)
-      .catch((err) => alert(`Couldn't resolve that contradiction — ${err instanceof Error ? err.message : String(err)}`));
+      .catch((err) =>
+        alert(`Couldn't resolve that contradiction — ${err instanceof Error ? err.message : String(err)}`)
+      );
   };
 
   return (
-    <section className="bg-white rounded-lg border p-4">
-      <h2 className="font-medium mb-3">Research plan</h2>
-      <ul className="space-y-3">
-        {ws.objectives.map((obj) => {
-          const openContradictions = obj.contradictions.filter((c) => c.status === "open");
-          return (
-            <li key={obj.id} className="border-l-2 border-zinc-200 pl-3">
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-medium text-sm">{obj.label}</span>
-                <span className={`text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wide ${confidenceStyle[obj.confidence]}`}>
-                  {obj.confidence === "none" ? "no evidence" : `${obj.confidence} confidence`}
-                </span>
-              </div>
-              {obj.summary && <p className="text-sm text-zinc-700 mt-0.5">{obj.summary}</p>}
-              <p className="text-[11px] text-zinc-400 mt-0.5">{obj.evidence.length} source{obj.evidence.length === 1 ? "" : "s"}</p>
-
-              {openContradictions.map((c) => (
-                <div key={c.id} className="mt-2 bg-amber-50 border border-amber-300 rounded p-2 text-xs space-y-1">
-                  <p>⚠️ Sources disagree: {c.note}</p>
-                  <p className="text-zinc-600">A: "{c.evidenceA.value}" — B: "{c.evidenceB.value}"</p>
-                  <div className="flex gap-2 mt-1">
-                    <button onClick={() => resolve(obj.id, c.id, "keep_a")} className="px-2 py-0.5 border rounded hover:bg-white">Keep A</button>
-                    <button onClick={() => resolve(obj.id, c.id, "keep_b")} className="px-2 py-0.5 border rounded hover:bg-white">Keep B</button>
-                    <button onClick={() => resolve(obj.id, c.id, "needs_more_research")} className="px-2 py-0.5 bg-amber-600 text-white rounded hover:bg-amber-700">Needs more research</button>
-                  </div>
-                </div>
-              ))}
-            </li>
-          );
-        })}
-      </ul>
+    <section>
+      {ws.objectives.map((obj) => (
+        <ObjectiveRow key={obj.id} obj={obj} onResolve={resolve} />
+      ))}
     </section>
+  );
+}
+
+function ObjectiveRow({
+  obj,
+  onResolve,
+}: {
+  obj: Objective;
+  onResolve: (o: string, c: string, d: "keep_a" | "keep_b" | "needs_more_research") => void;
+}) {
+  const open = obj.contradictions.filter((c) => c.status === "open");
+  const sourceCount = obj.evidence.length;
+
+  return (
+    <article className="rule-top px-4 py-3">
+      {/* The meter sits alongside the label and summary only. When it also
+          wrapped the contradiction block it stretched to three times the height
+          of a normal row, which broke the scan-down-the-column reading the
+          meter exists for. */}
+      <div className="flex gap-3">
+        <Meter level={obj.confidence} conflicted={open.length > 0} />
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline justify-between gap-3">
+            <h2 className="t-label truncate">{obj.label}</h2>
+            <span className="level" data-level={obj.confidence}>
+              {open.length > 0 ? (
+                <span style={{ color: "var(--conflict)" }}>sources disagree</span>
+              ) : (
+                LEVEL_WORD[obj.confidence]
+              )}
+            </span>
+          </div>
+
+          {obj.summary ? (
+            <p className="t-summary mt-1">{obj.summary}</p>
+          ) : (
+            <p className="t-meta mt-1">Capture a page or ask the agent to look into this.</p>
+          )}
+
+          {sourceCount > 0 && (
+            <p className="t-meta mt-1.5">
+              {sourceCount} {sourceCount === 1 ? "source" : "sources"}
+            </p>
+          )}
+
+        </div>
+      </div>
+
+      {open.map((c) => (
+            <div key={c.id} className="conflict-block mt-2.5 p-2.5">
+              <p className="t-summary" style={{ color: "var(--conflict)" }}>
+                {c.note}
+              </p>
+
+              <div className="mt-2 space-y-1.5">
+                <p className="t-quote">{c.evidenceA.value}</p>
+                <p className="t-quote">{c.evidenceB.value}</p>
+              </div>
+
+              {/* Buttons name the outcome, not the mechanism. */}
+              <div className="flex flex-wrap gap-1.5 mt-2.5">
+                <button onClick={() => onResolve(obj.id, c.id, "keep_a")} className="btn btn-quiet">
+                  Keep the first
+                </button>
+                <button onClick={() => onResolve(obj.id, c.id, "keep_b")} className="btn btn-quiet">
+                  Keep the second
+                </button>
+                <button
+                  onClick={() => onResolve(obj.id, c.id, "needs_more_research")}
+                  className="btn btn-conflict"
+                >
+                  Dig further
+                </button>
+              </div>
+            </div>
+          ))}
+    </article>
   );
 }

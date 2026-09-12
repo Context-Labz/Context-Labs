@@ -56,10 +56,23 @@ export async function POST(req: Request) {
   logActivity(ws, "search", `Captured from browser: ${source.title}`);
 
   try {
-    // Path 1: research-plan mode (default). Check this page against every
-    // objective that isn't already at high confidence, in one LLM call.
+    // Path 1: research-plan mode (default). Check this page against EVERY
+    // objective, in one LLM call.
+    //
+    // FIX: this used to filter to `o.confidence !== "high"`, which froze an
+    // objective the moment it reached high confidence — it was never shown to
+    // the model again, so it could never gain a source, be revised, or be
+    // contradicted. Once three objectives went high, every page captured
+    // afterwards was only checked against the remaining three, and the board
+    // stopped responding to what you were browsing.
+    //
+    // It also quietly disabled the thing this tool is for: contradictions can
+    // only be detected against evidence the model can see, and a well-supported
+    // objective is exactly where a conflicting source matters most. Confidence
+    // is a running assessment, not a finish line, so nothing is excluded and it
+    // is allowed to move in both directions as evidence accumulates.
     if (ws.objectives.length && text) {
-    const openObjectives = ws.objectives.filter((o) => o.confidence !== "high");
+    const openObjectives = ws.objectives;
     if (openObjectives.length) {
       const objectivesContext = openObjectives
         .map((o) => {
@@ -84,6 +97,10 @@ export async function POST(req: Request) {
             "character-for-character from the page text; a paraphrase will be rejected and the evidence discarded. Skip " +
             "objectives the page says nothing about. If the page's value conflicts with an objective's existing evidence, set " +
             "contradictsExisting=true and explain the conflict in contradictionNote — do NOT silently treat it as agreement.\n\n" +
+            "Objectives that already have evidence are included below and can still be updated. Return a match for one ONLY if this " +
+            "page adds something the recorded evidence does not already cover, or conflicts with it. If the page merely repeats what " +
+            "is already recorded, skip that objective — do not restate it. When you do update one, set confidence to your honest " +
+            "assessment given ALL the evidence now listed for it, which may be lower than its current value.\n\n" +
             `objectiveId MUST be exactly one of: ${availableIds}`,
           `Objectives:\n${objectivesContext}\n\nPage text:\n${pageText}`
         );

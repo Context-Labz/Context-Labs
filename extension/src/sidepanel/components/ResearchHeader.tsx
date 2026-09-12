@@ -2,11 +2,11 @@ import { useEffect, useState } from "react";
 import { ResearchWorkspace } from "@/lib/types";
 import { api } from "@/lib/api";
 
-// The research question is now settable from the primary objectives flow.
-// It used to be read-only here, with the only input buried in the secondary
-// comparison-mode <details> — which routes through /api/research/start and
-// resets the table. So a normal capture-driven session could never name its
-// own question and the header read "Untitled research" throughout.
+// The question is the hero of the panel: this whole tool exists to answer one
+// thing, and every other element on screen is evidence for or against it. It's
+// set in the reading face at the top of the page rather than treated as a
+// window title, and it stays editable in place — clicking the question is how
+// you start, so it shouldn't hide behind a settings affordance.
 export default function ResearchHeader({
   ws,
   onQuestionSaved,
@@ -43,41 +43,78 @@ export default function ResearchHeader({
     }
   };
 
+  const withEvidence = ws.objectives.filter((o) => o.evidence.length > 0).length;
+  const openConflicts = ws.objectives.reduce(
+    (n, o) => n + o.contradictions.filter((c) => c.status === "open").length,
+    0
+  );
+
   return (
-    <header className="border-b pb-3">
-      <p className="text-xs uppercase tracking-wide text-zinc-500">Research Room</p>
+    <header className="px-4 pt-4 pb-3">
       {editing ? (
-        <div className="flex items-center gap-2 mt-1">
-          <input
+        <div className="space-y-2">
+          <textarea
             autoFocus
+            rows={2}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") save();
-              if (e.key === "Escape") { setEditing(false); setDraft(ws.question); }
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                save();
+              }
+              if (e.key === "Escape") {
+                setEditing(false);
+                setDraft(ws.question);
+              }
             }}
-            placeholder="e.g. Is there a market for premium swimwear in Kenya?"
-            className="border rounded px-2 py-1 flex-1 text-sm"
+            placeholder="What are you trying to find out?"
+            className="field resize-none"
+            style={{ fontFamily: "var(--font-read)", fontSize: "17px", lineHeight: 1.35 }}
           />
-          <button
-            onClick={save}
-            disabled={saving}
-            className="px-2 py-1 bg-emerald-700 text-white rounded text-sm disabled:opacity-50"
-          >
-            {saving ? "Saving…" : "Save"}
-          </button>
+          <div className="flex items-center gap-2">
+            <button onClick={save} disabled={saving} className="btn btn-primary">
+              {saving ? "Saving" : "Save question"}
+            </button>
+            <button
+              onClick={() => {
+                setEditing(false);
+                setDraft(ws.question);
+              }}
+              className="btn btn-quiet"
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       ) : (
         <button
           onClick={() => setEditing(true)}
-          title="Click to set the research question"
-          className="text-left w-full group"
+          title="Edit the research question"
+          className="text-left w-full block"
         >
-          <h1 className={`text-xl font-semibold ${ws.question ? "" : "text-zinc-400"}`}>
-            {ws.question || "Set a research question…"}
-          </h1>
-          <span className="text-[11px] text-zinc-400 group-hover:text-zinc-600">click to edit</span>
+          {ws.question ? (
+            <h1 className="t-question">{ws.question}</h1>
+          ) : (
+            <p className="t-question-empty">What are you trying to find out?</p>
+          )}
         </button>
+      )}
+
+      {/* One quiet line of real status. Not a stat tile — a sentence, because
+          that's how an analyst would say it. */}
+      {!editing && (
+        <p className="t-meta mt-2">
+          {withEvidence === 0
+            ? `${ws.objectives.length} objectives, none with evidence yet`
+            : `${withEvidence} of ${ws.objectives.length} objectives have evidence`}
+          {openConflicts > 0 && (
+            <span style={{ color: "var(--conflict)", fontWeight: 600 }}>
+              {" · "}
+              {openConflicts} unresolved {openConflicts === 1 ? "conflict" : "conflicts"}
+            </span>
+          )}
+        </p>
       )}
     </header>
   );

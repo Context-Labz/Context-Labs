@@ -160,7 +160,7 @@ export default function App() {
   };
 
   if (loading || !ws) {
-    return <div className="p-4 text-sm text-zinc-500">Loading workspace…</div>;
+    return <p className="t-meta p-4">Opening your research room…</p>;
   }
 
   // workspaceId travels as an explicit parameter on every backend tool call
@@ -168,78 +168,141 @@ export default function App() {
   // this was verified against the real CopilotKit v2 API (see CHANGELOG.md).
   return (
     <CopilotKit runtimeUrl={`${api.backendUrl}/api/copilotkit`}>
-      <div className="p-4 space-y-4">
+      <div className="pb-24">
         <ResearchHeader ws={ws} onQuestionSaved={setWs} />
 
+        {/* The agent proposes, the analyst confirms — page text only leaves the
+            browser after one of these is accepted. Both are cool-toned: they're
+            offers, not problems, and warm is reserved for things that are. */}
         {detectedQuery && (
-          <div className="flex items-center justify-between gap-2 p-2 bg-blue-50 border border-blue-200 rounded">
-            <span className="text-sm">
-              🔍 You searched: “<strong>{detectedQuery}</strong>”
-            </span>
-            <button
-              onClick={captureCurrentPage}
-              disabled={capturing}
-              className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
-            >
-              {capturing ? "Capturing…" : "Capture"}
-            </button>
-          </div>
+          <Proposal
+            lead="You searched"
+            subject={detectedQuery}
+            action={capturing ? "Saving" : "Save this page"}
+            onAct={captureCurrentPage}
+            busy={capturing}
+            onDismiss={() => setDetectedQuery(null)}
+          />
         )}
 
         {relevantObjective && (
-          <div className="flex items-center justify-between gap-2 p-2 bg-green-50 border border-green-200 rounded">
-            <span className="text-sm">
-              📄 This page looks relevant to <strong>{relevantObjective}</strong>
-            </span>
-            <button
-              onClick={captureCurrentPage}
-              disabled={capturing}
-              className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 whitespace-nowrap"
-            >
-              {capturing ? "Capturing…" : "Capture"}
-            </button>
-          </div>
+          <Proposal
+            lead="This page looks like evidence for"
+            subject={relevantObjective}
+            action={capturing ? "Saving" : "Save this page"}
+            onAct={captureCurrentPage}
+            busy={capturing}
+            onDismiss={() => setRelevantObjective(null)}
+          />
         )}
-
-        <p className="text-xs text-zinc-500">
-          Objectives below are the default startup/market diligence checklist. Browse and use
-          "Capture this page" to map evidence onto them — or chat with the agent directly.
-        </p>
 
         <ResearchPlanView ws={ws} onResolved={setWs} />
         <CapturePageButton workspaceId={ws.id} onCaptured={refresh} />
         <GapBanner ws={ws} onResolved={setWs} />
 
-        <details className="text-sm">
-          <summary className="cursor-pointer text-zinc-500">Optional: compare named competitors on specific columns</summary>
-          {/* The question now lives in one place — the header — instead of
-              being typed again here. Two inputs for the same field meant the
-              header could say one thing and the auto-run research another. */}
-          <div className="flex items-center gap-2 mt-2">
-            <p className="flex-1 text-xs text-zinc-500">
-              {ws.question
-                ? <>Runs live Exa research for <span className="text-zinc-700">“{ws.question}”</span> and fills a cited comparison table. Columns are proposed automatically.</>
-                : "Set a research question in the header first."}
-            </p>
-            <button
-              onClick={runAutomatically}
-              disabled={running || !ws.question.trim()}
-              className="px-2 py-1 bg-emerald-700 text-white rounded disabled:opacity-50 whitespace-nowrap"
-            >
-              {running ? "Running…" : "Run automatically"}
-            </button>
+        {/* Everything below is reference material. It's collapsed by default so
+            the objectives board owns the panel — these used to be eight
+            equal-weight cards competing with the thing that matters. */}
+        <Section title="Sources" count={ws.sources.length}>
+          <SourcesPanel ws={ws} />
+        </Section>
+
+        <Section title="Memo">
+          <ReportView ws={ws} />
+        </Section>
+
+        <Section title="Comparison table" count={ws.table.rows.length || undefined}>
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <p className="t-meta flex-1">
+                {ws.question
+                  ? "Researches named companies against this question and fills a cited table."
+                  : "Set a question above first."}
+              </p>
+              <button
+                onClick={runAutomatically}
+                disabled={running || !ws.question.trim()}
+                className="btn btn-quiet"
+              >
+                {running ? "Researching" : "Run research"}
+              </button>
+            </div>
+            <ComparisonTableView ws={ws} />
           </div>
-        </details>
-        {/* "Run automatically" is the deterministic Exa-only fallback path for
-            the comparison-table mode — useful if the chat tool-calling loop is
-            unreliable mid-demo. The objectives checklist above is now primary. */}
-        <ComparisonTableView ws={ws} />
-        <ReportView ws={ws} />
-        <SourcesPanel ws={ws} />
-        <ActivityFeed ws={ws} />
+        </Section>
+
+        <Section title="What the agent did" count={ws.activity.length}>
+          <ActivityFeed ws={ws} />
+        </Section>
       </div>
       <CopilotChat ws={ws} onWorkspaceChange={refresh} />
     </CopilotKit>
+  );
+}
+
+// A confirmable suggestion from the ambient recognisers. Its left edge carries
+// the evidence hue so it reads as part of the same system as the meters.
+function Proposal({
+  lead,
+  subject,
+  action,
+  onAct,
+  busy,
+  onDismiss,
+}: {
+  lead: string;
+  subject: string;
+  action: string;
+  onAct: () => void;
+  busy: boolean;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      className="rule-top px-4 py-3"
+      style={{ background: "var(--evidence-wash)", borderLeft: "3px solid var(--evidence)" }}
+    >
+      <p className="t-meta">{lead}</p>
+      <p className="t-summary mt-0.5" style={{ color: "var(--ink)" }}>
+        {subject}
+      </p>
+      <div className="flex gap-1.5 mt-2">
+        <button onClick={onAct} disabled={busy} className="btn btn-primary">
+          {action}
+        </button>
+        <button onClick={onDismiss} className="btn btn-quiet">
+          Not this one
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Reference sections: quiet, collapsible, and counted so you can tell whether
+// opening one is worth it without opening it.
+function Section({
+  title,
+  count,
+  children,
+}: {
+  title: string;
+  count?: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <details className="rule-top group">
+      <summary className="px-4 py-2.5 cursor-pointer flex items-center gap-2 list-none">
+        <span
+          className="t-meta transition-transform group-open:rotate-90"
+          style={{ display: "inline-block", width: "8px" }}
+        >
+          ›
+        </span>
+        <span className="t-section flex-1">{title}</span>
+        {count !== undefined && <span className="t-meta">{count}</span>}
+      </summary>
+      <div className="px-4 pb-4 pt-1">{children}</div>
+    </details>
   );
 }
 
@@ -291,10 +354,11 @@ function CopilotChat({ ws, onWorkspaceChange }: { ws: ResearchWorkspace; onWorks
       />
       <button
         onClick={onWorkspaceChange}
-        className="fixed bottom-4 left-4 text-xs px-2 py-1 bg-zinc-200 rounded"
-        title="Re-fetch the workspace if the table doesn't update after a chat action"
+        className="btn btn-quiet fixed bottom-4 left-4"
+        style={{ background: "var(--surface)", boxShadow: "0 1px 3px rgb(20 32 43 / 0.12)" }}
+        title="Chat actions update the board on the backend; this pulls the latest state"
       >
-        ↻ Refresh
+        Refresh board
       </button>
     </>
   );

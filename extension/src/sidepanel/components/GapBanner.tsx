@@ -6,23 +6,48 @@ import { api } from "@/lib/api";
 // reached the UI — the banner disappeared but the table looked untouched.
 // resolve-gap now returns the full workspace, and this passes it straight
 // up to replace state wholesale.
-export default function GapBanner({ ws, onResolved }: { ws: ResearchWorkspace; onResolved: (ws: ResearchWorkspace) => void }) {
+//
+// Visually this shares the conflict treatment with contradictions, because
+// it's the same kind of moment: the agent has stopped and needs a person to
+// decide. Those are the only warm blocks in the panel.
+export default function GapBanner({
+  ws,
+  onResolved,
+}: {
+  ws: ResearchWorkspace;
+  onResolved: (ws: ResearchWorkspace) => void;
+}) {
   const open = ws.gaps.filter((g) => g.status === "open");
   if (!open.length) return null;
 
   const decide = (gapId: string, decision: "leave_blank" | "secondary_source") => {
-    api.resolveGap(ws.id, gapId, decision)
+    api
+      .resolveGap(ws.id, gapId, decision)
       .then(onResolved)
-      .catch((err) => alert(`Couldn't resolve that gap — ${err instanceof Error ? err.message : String(err)}`));
+      .catch((err) =>
+        alert(`Couldn't resolve that gap — ${err instanceof Error ? err.message : String(err)}`)
+      );
   };
 
   return (
-    <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 space-y-2">
+    <div className="rule-top px-4 py-3 space-y-2">
+      <p className="t-section" style={{ color: "var(--conflict)" }}>
+        Waiting on you
+      </p>
       {open.map((g) => (
-        <div key={g.id} className="flex items-center gap-3 text-sm">
-          <span>⚠️ <strong>{g.provider} / {g.column}:</strong> {g.reason}</span>
-          <button onClick={() => decide(g.id, "leave_blank")} className="px-2 py-1 border rounded hover:bg-white">Leave blank</button>
-          <button onClick={() => decide(g.id, "secondary_source")} className="px-2 py-1 bg-amber-600 text-white rounded hover:bg-amber-700">Use secondary source</button>
+        <div key={g.id} className="conflict-block p-2.5">
+          <p className="t-label">
+            {g.provider} · {g.column}
+          </p>
+          <p className="t-summary mt-0.5">{g.reason}</p>
+          <div className="flex flex-wrap gap-1.5 mt-2.5">
+            <button onClick={() => decide(g.id, "leave_blank")} className="btn btn-quiet">
+              Leave it blank
+            </button>
+            <button onClick={() => decide(g.id, "secondary_source")} className="btn btn-conflict">
+              Use a weaker source
+            </button>
+          </div>
         </div>
       ))}
     </div>

@@ -9,6 +9,22 @@ import {
   getWorkspace, putWorkspace, logActivity, makeId,
 } from "@/lib/workspace-store";
 import { ResearchWorkspace, TableCell } from "@/lib/types";
+// The same fixed checklist every workspace is seeded with — imported rather
+// than restated so the planner and the seed can't drift apart.
+import { VC_DILIGENCE_OBJECTIVES } from "@/lib/seed";
+
+// Who this tool screens for. Standing context, so neither the planner nor the
+// report writer has to be told the mandate on every request — the same reason
+// the objective checklist is seeded rather than asked for each time.
+//
+// PLACEHOLDERS — every <...> below is unfilled. Nothing here was inferred from
+// the codebase or invented; replace them with the real fund details before
+// relying on any judgement the agent makes about fit.
+const INVESTOR_PROFILE = `Fund: <FUND NAME>
+Thesis: <ONE OR TWO SENTENCES ON WHAT THIS FUND BELIEVES AND BACKS>
+Sectors: <SECTORS OF INTEREST>
+Stage and cheque size: <STAGE, e.g. pre-seed/seed> · <CHEQUE RANGE>
+Geographies: <MARKETS OF INTEREST>`;
 
 const planSchema = z.object({
   providers: z.array(z.string()).min(1),
@@ -45,9 +61,14 @@ export async function runResearch(payload: {
   // caller gave none) what the comparison columns should even be.
   const plan = await structured(
     planSchema,
-    "You plan web research. Given a research question, list the 4-6 specific entities to research and 1-2 web search queries per entity. " +
-      "Each query must name its entity explicitly so it can be matched back. If comparison columns are supplied, reuse them verbatim in `columns`; " +
-      "if none are supplied, propose 3-5 columns that suit the question.",
+    "You plan web research for the investor described below. Given a research question, list the 4-6 specific entities to research and " +
+      "1-2 web search queries per entity. Each query must name its entity explicitly so it can be matched back. If comparison columns are " +
+      "supplied, reuse them verbatim in `columns`; if none are supplied, propose 3-5 columns that suit the question.\n\n" +
+      "Use the investor profile to decide what is worth searching for: prioritise entities and queries that would produce evidence for the " +
+      "diligence objectives below, and skip lines of enquiry irrelevant to this fund's thesis, sectors, stage or geographies. The objectives " +
+      "are fixed — plan to fill evidence for THESE, do not substitute a different set:\n" +
+      `${VC_DILIGENCE_OBJECTIVES.join(", ")}\n\n` +
+      `Investor profile:\n${INVESTOR_PROFILE}`,
     `Question: ${payload.question}
 Columns: ${payload.columns.length ? payload.columns.join(", ") : "(none supplied — propose them)"}`
   );
@@ -189,7 +210,17 @@ export async function draftReport(workspaceId: string) {
   const res = await chat({
     model: process.env.LLM_MODEL || "openai/gpt-4o-mini", // routed through lib/llm.ts -> OpenRouter, which REQUIRES a provider prefix
     messages: [
-      { role: "system", content: "Write a concise research brief from the verified table. Explicitly mention gaps and unverified cells. No unsourced claims." },
+      {
+        role: "system",
+        content:
+          "Write a concise research brief from the verified table. Explicitly mention gaps and unverified cells. No unsourced claims.\n\n" +
+          "End the brief with one short closing paragraph addressed to the investor below. Weighing the evidence against the diligence " +
+          `objectives (${VC_DILIGENCE_OBJECTIVES.join(", ")}) and that investor's thesis, sectors, stage and geographies, say plainly ` +
+          "whether this looks like a fit worth pursuing, a pass, or something that needs more diligence before a call can be made — and " +
+          "give the one or two reasons why. Write it as prose in your own words: no rating, no score, no label. Where the evidence is too " +
+          "thin to support a view, say that instead of settling on one.\n\n" +
+          `Investor profile:\n${INVESTOR_PROFILE}`,
+      },
       { role: "user", content: `Question: ${ws.question}
 
 Table:
