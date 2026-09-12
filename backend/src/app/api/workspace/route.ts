@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { seedWorkspace } from "@/lib/seed";
-import { getWorkspace, putWorkspace, makeId } from "@/lib/workspace-store";
+import { getWorkspace, putWorkspace, logActivity, makeId } from "@/lib/workspace-store";
 
 // The extension calls this once when the side panel opens (or reattaches to
 // a saved workspace id — see chrome.storage usage in App.tsx). This is the
@@ -23,4 +23,29 @@ export async function GET(req: Request) {
   } catch {
     return NextResponse.json({ error: `workspace not found: ${id}` }, { status: 404 });
   }
+}
+
+// Set the research question on an existing workspace, without wiping state.
+//
+// There was previously NO way to do this: ResearchHeader renders
+// `ws.question || "Untitled research"` read-only, and the only question input
+// was the one inside the secondary comparison-mode <details> — which only
+// takes effect via /api/research/start, and that resets ws.table. So the
+// primary objectives flow, the one the demo actually follows, permanently read
+// "Untitled research" in the header.
+export async function PATCH(req: Request) {
+  const { workspaceId, question } = await req.json();
+  let ws;
+  try {
+    ws = getWorkspace(workspaceId);
+  } catch {
+    return NextResponse.json({ error: `workspace not found: ${workspaceId}` }, { status: 404 });
+  }
+  if (typeof question !== "string") {
+    return NextResponse.json({ error: "question must be a string" }, { status: 400 });
+  }
+  ws.question = question;
+  logActivity(ws, "spark", `Research question set: ${question}`);
+  putWorkspace(ws);
+  return NextResponse.json(ws);
 }

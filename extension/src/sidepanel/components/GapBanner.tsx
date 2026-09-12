@@ -13,7 +13,7 @@ export default function GapBanner({ ws, onResolved }: { ws: ResearchWorkspace; o
   const decide = (gapId: string, decision: "leave_blank" | "secondary_source") => {
     api.resolveGap(ws.id, gapId, decision)
       .then(onResolved)
-      .catch(() => alert("resolve-gap failed — check the backend logs"));
+      .catch((err) => alert(`Couldn't resolve that gap — ${err instanceof Error ? err.message : String(err)}`));
   };
 
   return (

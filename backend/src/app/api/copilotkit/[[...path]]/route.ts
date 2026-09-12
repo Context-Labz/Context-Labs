@@ -32,7 +32,37 @@ import {
 import { z } from "zod";
 import { exaSearch } from "@/lib/exa";
 import { getWorkspace, putWorkspace, logActivity, makeId } from "@/lib/workspace-store";
-import { TableCell } from "@/lib/types";
+import { quoteIsGrounded } from "@/lib/verify";
+import { ResearchWorkspace, TableCell } from "@/lib/types";
+
+// Full text of every result the agent has actually been shown this session,
+// keyed by url. search_web fills it; the citing tools check quotes against it.
+// Same globalThis pattern as workspace-store, and for the same reason: Next
+// compiles routes into separate bundles and a plain module-scope Map is not
+// reliably one instance per process.
+const gText = globalThis as unknown as { __researchRoomSeenText?: Map<string, string> };
+const seenText = gText.__researchRoomSeenText ?? (gText.__researchRoomSeenText = new Map<string, string>());
+
+// Enforcement for the chat path, mirroring the capture path's guard in
+// /api/research/add-source. Returns an error message for the model, or null
+// when the citation checks out.
+//
+// Deliberately permissive in one direction: if we have no recorded text for
+// the source (it came from somewhere other than search_web), the quote is
+// ACCEPTED rather than rejected. Rejecting on missing context would send the
+// agent into a retry loop it cannot win, which is worse mid-demo than an
+// unverified citation — and the capture path, where page text is always
+// present, enforces unconditionally.
+function citationProblem(ws: ResearchWorkspace, sourceId: string, quote: string): string | null {
+  const src = ws.sources.find((s) => s.id === sourceId);
+  if (!src) return `Unknown sourceId "${sourceId}". Call add_source with a search_web result first, then cite the id it returns.`;
+  const body = seenText.get(src.url);
+  if (!body) return null;
+  if (!quoteIsGrounded(body, quote)) {
+    return `That quote does not appear in ${src.url}. Copy an exact sentence from the source text you received — do not paraphrase. If the source doesn't actually support this, call flag_gap instead.`;
+  }
+  return null;
+}
 // workspaceId is an explicit parameter on every tool (not read from a
 // header) so this stays a plain module-level runtime. The extension's
 // CopilotSidebar instructions tell the model to pass the current workspace
@@ -43,7 +73,13 @@ const tools = [
     name: "search_web",
     description: "Search the live web for a query. Returns up to 3 results with title, url, and a text excerpt. Call this before add_source — never invent a url.",
     parameters: z.object({ query: z.string() }),
-    execute: async ({ query }) => exaSearch(query, 3),
+    execute: async ({ query }) => {
+      const results = await exaSearch(query, 3);
+      // Remember what the agent was actually shown, so a later citation can be
+      // checked against it rather than taken on trust.
+      for (const r of results) seenText.set(r.url, r.text);
+      return results;
+    },
   }),
 
   defineTool({
@@ -78,6 +114,8 @@ const tools = [
     }),
     execute: async ({ workspaceId, provider, column, value, sourceId, quote }) => {
       const ws = getWorkspace(workspaceId);
+      const problem = citationProblem(ws, sourceId, quote);
+      if (problem) throw new Error(problem); // surfaced to the model so it can correct itself
       let row = ws.table.rows.find((r) => r.provider === provider);
       if (!row) { row = { provider, cells: {} }; ws.table.rows.push(row); }
       const cell: TableCell = { value, citations: [{ sourceId, quote }], status: "verified" };
@@ -121,6 +159,8 @@ const tools = [
       const ws = getWorkspace(workspaceId);
       const obj = ws.objectives.find((o) => o.id === objectiveId);
       if (!obj) throw new Error(`Unknown objective id: ${objectiveId}. Use an id from your context, don't invent one.`);
+      const problem = citationProblem(ws, sourceId, quote);
+      if (problem) throw new Error(problem); // surfaced to the model so it can correct itself
       obj.evidence.push({ sourceId, quote, value });
       obj.confidence = confidence;
       obj.summary = summary;
@@ -144,6 +184,10 @@ const tools = [
       const ws = getWorkspace(workspaceId);
       const obj = ws.objectives.find((o) => o.id === objectiveId);
       if (!obj) throw new Error(`Unknown objective id: ${objectiveId}`);
+      const problemA = citationProblem(ws, sourceIdA, quoteA);
+      if (problemA) throw new Error(`Side A: ${problemA}`);
+      const problemB = citationProblem(ws, sourceIdB, quoteB);
+      if (problemB) throw new Error(`Side B: ${problemB}`);
       obj.contradictions.push({
         id: makeId("contra"),
         note,
@@ -187,15 +231,44 @@ const tools = [
 // "no claim without a source" is ENFORCED, not just prompted. (Judge note.)
 // ─────────────────────────────────────────────────────────────────────────
 
+// Guard against the exact footgun above: a bare model name here is fatal at
+// RUN time (the sidebar just shows an error after you hit send), not at boot,
+// so catch it at boot instead and fall back to a valid default.
+function agentModel(): string {
+  const configured = process.env.COPILOT_AGENT_MODEL?.trim();
+  if (!configured) return "openai/gpt-4o-mini";
+  if (!configured.includes("/")) {
+    console.warn(
+      `[research-room] COPILOT_AGENT_MODEL="${configured}" has no provider prefix; ` +
+        `the CopilotKit agent requires one (e.g. "openai/${configured}"). Falling back to openai/gpt-4o-mini.`
+    );
+    return "openai/gpt-4o-mini";
+  }
+  return configured;
+}
+
 const runtime = new CopilotRuntime({
   agents: {
     default: new BuiltInAgent({
-      // Verified enum value on @copilotkit/runtime@1.71.0's BuiltInAgentModel
-      // type — override with LLM_MODEL if you want a different one from that
-      // same list (e.g. "openai/gpt-5-mini").
-      model: process.env.LLM_MODEL || "openai/gpt-4o-mini",
+      // NOTE the separate env var. This agent needs a PROVIDER-PREFIXED model
+      // ("openai/gpt-4o-mini"); lib/llm.ts's OpenAI SDK calls need the bare
+      // name ("gpt-4o-mini"). They used to share LLM_MODEL, which cannot
+      // satisfy both — setting LLM_MODEL=gpt-4o-mini for the SDK path made
+      // every chat run die with RUN_ERROR: Invalid model string "gpt-4o-mini".
+      // Valid values are the BuiltInAgentModel union in
+      // @copilotkit/runtime@1.71.0: openai/gpt-5, openai/gpt-5-mini,
+      // openai/gpt-4.1{,-mini,-nano}, openai/gpt-4o{,-mini}, openai/o3{,-mini},
+      // openai/o4-mini, anthropic/claude-sonnet-4-{5,6},
+      // anthropic/claude-opus-4-8, anthropic/claude-haiku-4-5,
+      // google/gemini-2.5-{pro,flash,flash-lite}.
+      model: agentModel(),
       tools,
-      maxSteps: 8, // default is 1 — too low to chain search → cite → fill
+      // Default is 1 — far too low to chain search → cite → fill. One
+      // objective costs three calls (search_web → add_source →
+      // update_objective), so the old value of 8 capped a turn at two
+      // objectives and the agent stopped mid-checklist with no explanation.
+      // 20 covers six objectives plus retries and a closing summary.
+      maxSteps: 20,
       // System prompt lives here now, not as an `instructions` prop on the
       // frontend <CopilotSidebar> (that prop doesn't exist in v2 — verified
       // by a real compile error, not assumed). It doesn't need a workspace
@@ -218,7 +291,26 @@ const runtime = new CopilotRuntime({
   ...(process.env.CPK_INTELLIGENCE_API_KEY ? {} : { runner: new InMemoryAgentRunner() }),
 });
 
+// This file MUST live at api/copilotkit/[[...path]]/route.ts, not
+// api/copilotkit/route.ts.
+//
+// createCopilotRuntimeHandler defaults to mode "multi-route": it routes on the
+// URL path, and the client appends sub-paths to runtimeUrl — /info,
+// /agent/<id>/run, /agent/<id>/connect, /threads/..., /annotate. A plain
+// route.ts matches ONLY the exact /api/copilotkit, so every one of those calls
+// hit Next's own 404 and this handler never ran at all. Symptom: the chat
+// sidebar renders fine and the send button does nothing, because the POST that
+// would start a run 404s before reaching CopilotKit.
+//
+// The optional catch-all [[...path]] matches the base path AND everything
+// under it; basePath below tells the handler what prefix to strip.
 const handler = createCopilotRuntimeHandler({ runtime, basePath: "/api/copilotkit" });
 
 export const GET = handler;
 export const POST = handler;
+// The client also issues DELETE (thread deletion, memory removal) and PUT/PATCH
+// on some routes. Export them so they reach the handler rather than 405ing at
+// the Next layer.
+export const PUT = handler;
+export const PATCH = handler;
+export const DELETE = handler;

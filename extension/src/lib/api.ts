@@ -2,8 +2,20 @@ import { ResearchWorkspace } from "./types";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://localhost:3000";
 
+// Backend error routes now return { error, workspace? } as JSON rather than an
+// empty 500, so surface that message instead of a bare status code — the whole
+// point of the change is that a failure mid-demo is debuggable from the panel.
 async function asJson<T>(res: Response): Promise<T> {
-  if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+  if (!res.ok) {
+    let detail = "";
+    try {
+      const body = await res.json();
+      detail = body?.error ?? JSON.stringify(body);
+    } catch {
+      detail = await res.text().catch(() => "");
+    }
+    throw new Error(detail ? `${res.status}: ${detail}` : `${res.status}: request failed`);
+  }
   return res.json();
 }
 
@@ -22,6 +34,15 @@ export const api = {
 
   getWorkspace: (id: string) =>
     fetch(`${BACKEND_URL}/api/workspace?id=${encodeURIComponent(id)}`).then((r) => asJson<ResearchWorkspace>(r)),
+
+  // Sets the research question without touching anything else in the
+  // workspace (unlike startResearch, which resets the comparison table).
+  setQuestion: (workspaceId: string, question: string) =>
+    fetch(`${BACKEND_URL}/api/workspace`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId, question }),
+    }).then((r) => asJson<ResearchWorkspace>(r)),
 
   startResearch: (workspaceId: string, question: string, columns: string[]) =>
     fetch(`${BACKEND_URL}/api/research/start`, {

@@ -21,8 +21,11 @@ export default function CapturePageButton({ workspaceId, onCaptured }: { workspa
       try {
         await api.addCapturedSource(workspaceId, { title: page.title, url: page.url, text: page.bodyText }, provider || undefined);
         onCaptured();
-      } catch {
-        alert("Couldn't save this page — check the backend logs.");
+      } catch (err) {
+        // Was "check the backend logs" for every failure, including the blank
+        // 500 the schema bug produced. The backend now returns the real cause.
+        alert(`Couldn't save this page — ${err instanceof Error ? err.message : String(err)}`);
+        onCaptured(); // the source itself is still recorded; pull the updated activity log
       } finally {
         setBusy(false);
       }

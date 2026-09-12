@@ -18,7 +18,7 @@ export default function ResearchPlanView({ ws, onResolved }: { ws: ResearchWorks
   const resolve = (objectiveId: string, contradictionId: string, decision: "keep_a" | "keep_b" | "needs_more_research") => {
     api.resolveContradiction(ws.id, objectiveId, contradictionId, decision)
       .then(onResolved)
-      .catch(() => alert("resolve-contradiction failed — check the backend logs"));
+      .catch((err) => alert(`Couldn't resolve that contradiction — ${err instanceof Error ? err.message : String(err)}`));
   };
 
   return (

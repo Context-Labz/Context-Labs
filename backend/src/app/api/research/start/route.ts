@@ -15,9 +15,17 @@ export async function POST(req: Request) {
   try {
     getWorkspace(workspaceId);
   } catch {
-    putWorkspace(seedWorkspace(workspaceId, question, columns));
+    putWorkspace(seedWorkspace(workspaceId, question ?? "", columns ?? []));
   }
 
-  await runResearch({ workspaceId, question, columns });
+  try {
+    await runResearch({ workspaceId, question, columns: columns ?? [] });
+  } catch (err) {
+    // A failure partway through still leaves useful state (sources found,
+    // activity logged), so return the workspace alongside the real error
+    // instead of an empty 500 the side panel can't explain.
+    const message = err instanceof Error ? err.message : String(err);
+    return NextResponse.json({ error: message, workspace: getWorkspace(workspaceId) }, { status: 502 });
+  }
   return NextResponse.json(getWorkspace(workspaceId)); // full workspace, not just counts
 }

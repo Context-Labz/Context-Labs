@@ -5,6 +5,7 @@
 // error. Verify DEFAULT_MODEL against a real OpenAI model list tonight).
 import OpenAI from "openai";
 import { z } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
 
 // UNVERIFIED placeholder — confirm this is a real, currently-available
 // model string for your OpenAI key before relying on it as the default.
@@ -58,32 +59,90 @@ export async function chat(params: OpenAI.Chat.ChatCompletionCreateParamsNonStre
   return withFallback((client) => client.chat.completions.create(params));
 }
 
-// Structured output: ask for JSON, parse with Zod, retry once on parse failure.
+// Some models wrap JSON in a markdown fence despite response_format. Strip it
+// rather than letting JSON.parse throw on the backticks.
+function parseJsonLoose(raw: string): unknown {
+  const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/```$/, "").trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    return undefined; // let the Zod layer report it as a validation failure
+  }
+}
+
+// FIX (the big one): `schema` used to be applied ONLY at the end, in
+// schema.parse(). It never reached the model — so every .describe() in the
+// calling routes (add-source's objectiveMatchSchema especially) was dead
+// code, and the model had to guess field names like `objectiveId` and
+// `contradictsExisting` from prose that never named them. It guessed
+// differently, Zod threw, and the retry re-asked WITHOUT the schema too, so
+// the retry had no more information than the first attempt. Net effect: the
+// capture path — the primary demo path — failed with an unhandled throw.
+//
+// Serialise the schema into the system prompt. Prompt injection rather than
+// OpenAI's native `json_schema` strict mode because this exact call path also
+// runs against the OpenRouter fallback, where strict structured output isn't
+// universally supported — and a fallback that can't parse is not a fallback.
+// $refStrategy "none" inlines repeated sub-schemas: models handle a flat
+// schema far more reliably than one full of internal $ref pointers.
+function schemaPrompt(system: string, schema: z.ZodType<unknown>): string {
+  const json = JSON.stringify(zodToJsonSchema(schema, { $refStrategy: "none" }), null, 2);
+  return `${system}
+
+Return ONE JSON object matching this JSON Schema exactly. Use these exact field
+names, include every property listed in "required", add no properties that
+aren't in the schema, and emit raw JSON with no markdown fences.
+
+JSON Schema:
+${json}`;
+}
+
+// Structured output: ask for JSON, parse with Zod, retry once with the
+// validation error fed back in.
 export async function structured<T>(
   schema: z.ZodType<T>,
   system: string,
   user: string,
 ): Promise<T> {
+  const instructions = schemaPrompt(system, schema);
+
   const res = await chat({
     model: DEFAULT_MODEL,
     response_format: { type: "json_object" },
     messages: [
-      { role: "system", content: system },
+      { role: "system", content: instructions },
       { role: "user", content: user },
     ],
   });
-  const raw = res.choices[0]?.message?.content ?? "{}";
-  try {
-    return schema.parse(JSON.parse(raw));
-  } catch {
-    const retry = await chat({
-      model: DEFAULT_MODEL,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: system + "\nReturn ONLY valid JSON matching the schema." },
-        { role: "user", content: raw + "\n\nThat output failed validation. Fix it." },
-      ],
-    });
-    return schema.parse(JSON.parse(retry.choices[0]?.message?.content ?? "{}"));
-  }
+  const raw = res.choices[0]?.message?.content ?? "";
+  const first = schema.safeParse(parseJsonLoose(raw));
+  if (first.success) return first.data;
+
+  // Retry as a real conversation turn — the model sees its own bad output and
+  // the specific validation errors, not just "fix it".
+  const retry = await chat({
+    model: DEFAULT_MODEL,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: instructions },
+      { role: "user", content: user },
+      { role: "assistant", content: raw },
+      {
+        role: "user",
+        content: `That response failed schema validation:
+
+${first.error.issues.map((i) => `- ${i.path.join(".") || "(root)"}: ${i.message}`).join("\n")}
+
+Return corrected JSON matching the schema above. Raw JSON only.`,
+      },
+    ],
+  });
+  const second = schema.safeParse(parseJsonLoose(retry.choices[0]?.message?.content ?? ""));
+  if (second.success) return second.data;
+
+  throw new Error(
+    `Model output failed schema validation twice: ${second.error.issues
+      .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+      .join("; ")}`
+  );
 }

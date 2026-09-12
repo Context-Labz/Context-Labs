@@ -21,7 +21,6 @@ const STORAGE_KEY = "research-room:workspace-id";
 export default function App() {
   const [ws, setWs] = useState<ResearchWorkspace | null>(null);
   const [loading, setLoading] = useState(true);
-  const [question, setQuestion] = useState("");
   const [running, setRunning] = useState(false);
 
   // FIX (was gap #2 in the review): a workspace must exist on the backend
@@ -34,9 +33,7 @@ export default function App() {
       const savedId = saved[STORAGE_KEY] as string | undefined;
       try {
         if (savedId) {
-          const existing = await api.getWorkspace(savedId);
-          setWs(existing);
-          setQuestion(existing.question);
+          setWs(await api.getWorkspace(savedId));
           return;
         }
       } catch {
@@ -53,10 +50,14 @@ export default function App() {
   };
 
   const runAutomatically = async () => {
-    if (!ws || !question.trim()) return;
+    if (!ws || !ws.question.trim()) return;
     setRunning(true);
     try {
-      setWs(await api.startResearch(ws.id, question, ws.table.columns));
+      setWs(await api.startResearch(ws.id, ws.question, ws.table.columns));
+    } catch (err) {
+      // The route returns the real cause now (bad key, Exa failure, schema
+      // validation) instead of an empty 500 — show it rather than swallowing it.
+      alert(`Auto-run failed — ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setRunning(false);
     }
@@ -72,7 +73,7 @@ export default function App() {
   return (
     <CopilotKit runtimeUrl={`${api.backendUrl}/api/copilotkit`}>
       <div className="p-4 space-y-4">
-        <ResearchHeader ws={ws} />
+        <ResearchHeader ws={ws} onQuestionSaved={setWs} />
 
         <p className="text-xs text-zinc-500">
           Objectives below are the default startup/market diligence checklist. Browse and use
@@ -85,16 +86,18 @@ export default function App() {
 
         <details className="text-sm">
           <summary className="cursor-pointer text-zinc-500">Optional: compare named competitors on specific columns</summary>
+          {/* The question now lives in one place — the header — instead of
+              being typed again here. Two inputs for the same field meant the
+              header could say one thing and the auto-run research another. */}
           <div className="flex items-center gap-2 mt-2">
-            <input
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              placeholder="e.g. Compare the top 5 Kenyan payment gateways"
-              className="border rounded px-2 py-1 flex-1"
-            />
+            <p className="flex-1 text-xs text-zinc-500">
+              {ws.question
+                ? <>Runs live Exa research for <span className="text-zinc-700">“{ws.question}”</span> and fills a cited comparison table. Columns are proposed automatically.</>
+                : "Set a research question in the header first."}
+            </p>
             <button
               onClick={runAutomatically}
-              disabled={running || !question.trim()}
+              disabled={running || !ws.question.trim()}
               className="px-2 py-1 bg-emerald-700 text-white rounded disabled:opacity-50 whitespace-nowrap"
             >
               {running ? "Running…" : "Run automatically"}
