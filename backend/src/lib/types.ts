@@ -1,10 +1,6 @@
-// Everything the agent can see or touch in the workspace.
-// NOTE: keep this file boring and explicit — the agent reads this shape
-// via CopilotKit context, and judges will read this file.
-
 export interface Citation {
   sourceId: string;
-  quote: string; // verbatim excerpt — the "no claim without a source" rule
+  quote: string;
 }
 
 export interface Source {
@@ -34,24 +30,17 @@ export interface Gap {
   status: GapStatus;
 }
 
-// Research plan layer (VC-diligence framing): a fixed list of objectives —
-// "Market Size", "Competition", "Team", etc. — that evidence gets mapped
-// into as the user browses, instead of answering one open-ended question.
-// This is what lets the agent say "strong on demand, weak on manufacturing"
-// instead of just returning a single synthesized answer — the thing a
-// standalone chatbox can't do because it has no persistent plan to map
-// evidence into across separate browsing sessions/tabs.
 export type ObjectiveConfidence = "none" | "low" | "medium" | "high";
 
 export interface ObjectiveEvidence {
   sourceId: string;
   quote: string;
-  value: string; // the specific claim this piece of evidence supports, e.g. "KES 3,500–6,500"
+  value: string;
 }
 
 export interface Contradiction {
   id: string;
-  note: string; // what conflicts, in plain language
+  note: string;
   evidenceA: ObjectiveEvidence;
   evidenceB: ObjectiveEvidence;
   status: "open" | "resolved";
@@ -59,15 +48,15 @@ export interface Contradiction {
 
 export interface Objective {
   id: string;
-  label: string; // "Market Size", "Pricing", "Competition", ...
-  summary: string; // current best synthesis, empty until evidence exists
+  label: string;
+  summary: string;
   confidence: ObjectiveConfidence;
   evidence: ObjectiveEvidence[];
   contradictions: Contradiction[];
 }
 
 export interface ActivityItem {
-  icon: string; // e.g. "search" | "table" | "warn" | "report"
+  icon: string;
   text: string;
   ts: string;
 }
@@ -77,6 +66,42 @@ export interface ComparisonTable {
   rows: { provider: string; cells: Record<string, TableCell> }[];
 }
 
+export type BrowserEventType =
+  | "highlight"
+  | "tab_switch"
+  | "link_click"
+  | "search"
+  | "page_view"
+  | "capture";
+
+export interface BrowserEvent {
+  id: string;
+  type: BrowserEventType;
+  title: string;
+  url: string;
+  text?: string;
+  ts: string;
+}
+
+export interface SuggestedLink {
+  id: string;
+  title: string;
+  url: string;
+  reason: string;
+  snippet: string;
+}
+
+export interface ResearchNote {
+  id: string;
+  text: string;
+  url: string;
+  title: string;
+  ts: string;
+  objectiveId?: string;
+}
+
+export type WorkspaceStatus = "active" | "completed";
+
 export interface ResearchWorkspace {
   id: string;
   question: string;
@@ -85,6 +110,10 @@ export interface ResearchWorkspace {
   objectives: Objective[];
   gaps: Gap[];
   activity: ActivityItem[];
-  notes: string[];
+  notes: ResearchNote[];
+  events: BrowserEvent[];
+  suggestions: SuggestedLink[];
   report: string;
+  summary: string;
+  status: WorkspaceStatus;
 }

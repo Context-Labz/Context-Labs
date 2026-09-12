@@ -2,6 +2,45 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --bg: #10100e;
+  --bg-2: #171613;
+  --bg-3: #1e1c18;
+  --line: #2c2924;
+  --ink: #f3efe7;
+  --mute: #9a9488;
+  --faint: #6b665c;
+  --brass: #d4a574;
+  --brass-dim: #8a6a45;
+  --good: #8fbf9f;
+  --warn: #e0b44a;
+  --bad: #d4886a;
+}
+
+html,
 body {
-  @apply bg-zinc-50 text-zinc-900;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans), "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+::selection {
+  background: rgba(212, 165, 116, 0.35);
+}
+
+.font-serif {
+  font-family: var(--font-serif), Newsreader, Georgia, serif;
+}
+
+.panel-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.panel-scroll::-webkit-scrollbar-thumb {
+  background: #3a362f;
+  border-radius: 99px;
 }

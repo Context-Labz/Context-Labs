@@ -1,48 +1,19 @@
 import { NextResponse } from "next/server";
-import { z } from "zod";
 import { getOrCreateWorkspace, putWorkspace, logActivity, makeId } from "@/lib/workspace-store";
-import { structured } from "@/lib/llm";
-import { quoteIsGrounded } from "@/lib/verify";
+import { applyPageToObjectives } from "@/lib/agent/extract";
+import { refreshSuggestions } from "@/lib/agent/suggest";
+import { structured, llmConfigured } from "@/lib/llm";
+import { quoteInText } from "@/lib/keywords";
 import { TableCell } from "@/lib/types";
+import { z } from "zod";
 
 const claimsSchema = z.object({
   claims: z.array(z.object({ column: z.string(), value: z.string(), quote: z.string() })),
 });
 
-// The one-click "check this page against my research plan" extraction —
-// this is the actual differentiator from a plain summarize-this-page
-// extension (see CHANGELOG.md): it maps evidence onto the SAME objective
-// checklist the chat agent works from, not a fresh answer each time, and it
-// flags when new evidence disagrees with what's already recorded instead
-// of silently overwriting it.
-const objectiveMatchSchema = z.object({
-  matches: z.array(
-    z.object({
-      objectiveId: z.string(),
-      value: z.string().describe("The specific claim this page supports, e.g. \"KES 3,500–6,500\""),
-      quote: z.string().describe("Verbatim excerpt from the page text"),
-      confidence: z.enum(["low", "medium", "high"]),
-      summary: z.string().describe("One-sentence updated synthesis for this objective given all evidence so far, including any prior evidence listed below"),
-      contradictsExisting: z.boolean().describe("True if this value conflicts with the objective's existing evidence/summary below"),
-      // .nullish() not .optional(): models routinely emit an explicit null for
-      // a field they have nothing to say about, and plain .optional() rejects
-      // null — which would fail the whole parse over a non-problem.
-      contradictionNote: z.string().nullish().describe("Required if contradictsExisting is true: what conflicts, in plain language"),
-    })
-  ),
-});
-
 export async function POST(req: Request) {
   const { workspaceId, title, url, text, provider } = await req.json();
-  // Self-healing: the in-memory store is emptied by any backend restart while
-  // the side panel keeps its id in chrome.storage. Re-seed under the same id
-  // rather than 404ing, so "Capture this page" keeps working after a restart.
   const ws = getOrCreateWorkspace(workspaceId);
-
-  // The exact string the model is shown. Quote verification below must check
-  // against THIS, not the full page text — a quote from beyond the cut-off is
-  // one the model could not have read.
-  const pageText = String(text || "").slice(0, 4000);
 
   const source = {
     id: makeId("src"),
@@ -53,183 +24,53 @@ export async function POST(req: Request) {
     claims: [] as string[],
   };
   ws.sources.push(source);
+  ws.events.push({
+    id: makeId("evt"),
+    type: "capture",
+    title: source.title,
+    url,
+    text: source.excerpt,
+    ts: source.fetchedAt,
+  });
   logActivity(ws, "search", `Captured from browser: ${source.title}`);
 
   try {
-    // Path 1: research-plan mode (default). Check this page against EVERY
-    // objective, in one LLM call.
-    //
-    // FIX: this used to filter to `o.confidence !== "high"`, which froze an
-    // objective the moment it reached high confidence — it was never shown to
-    // the model again, so it could never gain a source, be revised, or be
-    // contradicted. Once three objectives went high, every page captured
-    // afterwards was only checked against the remaining three, and the board
-    // stopped responding to what you were browsing.
-    //
-    // It also quietly disabled the thing this tool is for: contradictions can
-    // only be detected against evidence the model can see, and a well-supported
-    // objective is exactly where a conflicting source matters most. Confidence
-    // is a running assessment, not a finish line, so nothing is excluded and it
-    // is allowed to move in both directions as evidence accumulates.
     if (ws.objectives.length && text) {
-    const openObjectives = ws.objectives;
-    if (openObjectives.length) {
-      const objectivesContext = openObjectives
-        .map((o) => {
-          const existing = o.evidence.length
-            ? ` Existing evidence: ${o.evidence.map((e) => `"${e.value}"`).join("; ")}.`
-            : " No evidence yet.";
-          return `- id="${o.id}" label="${o.label}" current confidence=${o.confidence} summary="${o.summary}".${existing}`;
-        })
-        .join("\n");
+      await applyPageToObjectives(ws, source, String(text));
+    }
 
-      // origin/main's real find: naming the legal ids stops the model
-      // inventing an objectiveId. The rest of its hand-written JSON shape is
-      // redundant now that structured() serialises the Zod schema itself.
-      const availableIds = openObjectives.map((o) => o.id).join(", ");
-
-      let result;
-      try {
-        result = await structured(
-          objectiveMatchSchema,
-          "You check a captured web page against a list of research objectives. For each objective this page provides real " +
-            "evidence for, return a match with a verbatim quote — never invent a value or quote. The quote must be copied " +
-            "character-for-character from the page text; a paraphrase will be rejected and the evidence discarded. Skip " +
-            "objectives the page says nothing about. If the page's value conflicts with an objective's existing evidence, set " +
-            "contradictsExisting=true and explain the conflict in contradictionNote — do NOT silently treat it as agreement.\n\n" +
-            "Objectives that already have evidence are included below and can still be updated. Return a match for one ONLY if this " +
-            "page adds something the recorded evidence does not already cover, or conflicts with it. If the page merely repeats what " +
-            "is already recorded, skip that objective — do not restate it. When you do update one, set confidence to your honest " +
-            "assessment given ALL the evidence now listed for it, which may be lower than its current value.\n\n" +
-            `objectiveId MUST be exactly one of: ${availableIds}`,
-          `Objectives:\n${objectivesContext}\n\nPage text:\n${pageText}`
+    if (provider && ws.table.columns.length && text) {
+      let extracted = { claims: [] as { column: string; value: string; quote: string }[] };
+      if (llmConfigured()) {
+        extracted = await structured(
+          claimsSchema,
+          "Extract factual claims from the page text for the given table columns. Every claim MUST include a verbatim supporting quote. Skip columns with no evidence. Never invent a value. Return JSON.",
+          `Provider: ${provider}\nColumns: ${ws.table.columns.join(", ")}\n\nPage text:\n${String(text).slice(0, 4000)}`,
         );
-      } catch (err) {
-        // Previously an unhandled throw here produced an empty 500 and the
-        // side panel showed "Couldn't save this page" with nothing to debug.
-        // The source is already recorded, so keep it and report the real cause.
-        const message = err instanceof Error ? err.message : String(err);
-        logActivity(ws, "warn", `Objective matching failed: ${message}`);
-        putWorkspace(ws);
-        return NextResponse.json({ error: `objective matching failed: ${message}`, workspace: ws }, { status: 502 });
       }
-
-      // Defensive: a model can satisfy the schema and still return blank
-      // strings. Drop those rather than recording empty evidence.
-      const validMatches = result.matches.filter(
-        (m) => m.objectiveId && m.value && m.quote && m.summary
-      );
-
-      let contradictionCount = 0;
-      let rejectedCount = 0;
-      for (const match of validMatches) {
-        const obj = ws.objectives.find((o) => o.id === match.objectiveId);
-        if (!obj) continue; // model referenced an id we didn't offer — ignore rather than crash
-
-        // ENFORCEMENT: the quote has to actually be on the page. Rejections are
-        // logged to the activity feed rather than dropped silently — an agent
-        // visibly refusing a claim it can't ground is the rule working, and
-        // it's more convincing than a board that only ever fills up.
-        if (!quoteIsGrounded(pageText, match.quote)) {
-          rejectedCount++;
-          logActivity(ws, "warn", `Discarded an unsupported claim for ${obj.label} — the quote isn't on the page.`);
-          continue;
-        }
-
-        const evidence = { sourceId: source.id, quote: match.quote, value: match.value };
-        if (match.contradictsExisting && obj.evidence.length) {
-          const priorEvidence = obj.evidence[obj.evidence.length - 1];
-          obj.contradictions.push({
-            id: makeId("contra"),
-            note: match.contradictionNote || "New evidence conflicts with a prior source.",
-            evidenceA: priorEvidence,
-            evidenceB: evidence,
-            status: "open",
-          });
-          // Record the conflicting evidence too. It is real, cited evidence —
-          // withholding it left the objective's source count frozen during the
-          // one beat the demo pauses on. Summary/confidence deliberately do NOT
-          // move: that's the human's call in resolve-contradiction.
-          obj.evidence.push(evidence);
-          contradictionCount++;
-          logActivity(ws, "warn", `Contradiction on ${obj.label}: ${match.contradictionNote || "conflicting values"}`);
-        } else {
-          obj.evidence.push(evidence);
-          obj.confidence = match.confidence;
-          obj.summary = match.summary;
-          logActivity(ws, "table", `${obj.label}: ${match.confidence} confidence from captured page`);
-        }
+      let row = ws.table.rows.find((r) => r.provider === provider);
+      if (!row) {
+        row = { provider, cells: {} };
+        ws.table.rows.push(row);
       }
-      if (!validMatches.length) {
-        logActivity(ws, "search", "Captured page didn't match any open objective.");
-      } else if (rejectedCount && rejectedCount === validMatches.length) {
-        logActivity(ws, "warn", "Every claim from this page failed quote verification — nothing recorded.");
+      for (const claim of extracted.claims) {
+        if (!quoteInText(String(text), claim.quote)) continue;
+        const cell: TableCell = {
+          value: claim.value,
+          citations: [{ sourceId: source.id, quote: claim.quote }],
+          status: "verified",
+        };
+        row.cells[claim.column] = cell;
       }
-      if (contradictionCount) {
-        logActivity(ws, "warn", `${contradictionCount} contradiction(s) need a decision — see the research plan.`);
-      }
-    }
-  }
-
-  // Path 2: general comparison mode (the original flow) — only runs if the
-  // caller explicitly named a provider AND the workspace has table columns,
-  // so it never conflicts with path 1 above.
-  if (provider && ws.table.columns.length && text) {
-    let extracted;
-    try {
-      extracted = await structured(
-        claimsSchema,
-        "Extract factual claims from the page text for the given table columns. Every claim MUST include a verbatim supporting quote, copied character-for-character from the page text — a paraphrase will be rejected. Skip columns with no evidence. Never invent a value.",
-        `Provider: ${provider}
-Columns: ${ws.table.columns.join(", ")}
-
-Page text:
-${pageText}`
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      logActivity(ws, "warn", `Column extraction failed: ${message}`);
-      putWorkspace(ws);
-      return NextResponse.json({ error: `column extraction failed: ${message}`, workspace: ws }, { status: 502 });
+      logActivity(ws, "table", `Filled ${extracted.claims.length} cell(s) for ${provider} from captured page.`);
     }
 
-    let row = ws.table.rows.find((r) => r.provider === provider);
-    if (!row) { row = { provider, cells: {} }; ws.table.rows.push(row); }
-    let filled = 0;
-    for (const claim of extracted.claims) {
-      if (!quoteIsGrounded(pageText, claim.quote)) {
-        logActivity(ws, "warn", `Discarded an unsupported claim for ${provider} / ${claim.column} — the quote isn't on the page.`);
-        continue;
-      }
-      const cell: TableCell = { value: claim.value, citations: [{ sourceId: source.id, quote: claim.quote }], status: "verified" };
-      row.cells[claim.column] = cell;
-      filled++;
-    }
-    logActivity(ws, "table", `Filled ${filled} cell(s) for ${provider} from captured page.`);
-  }
-
-  putWorkspace(ws);
-  return NextResponse.json(ws);
+    await refreshSuggestions(ws);
+    putWorkspace(ws);
+    return NextResponse.json(ws);
   } catch (err: any) {
-    // Log the actual LLM/OpenRouter error for debugging
-    console.error("add-source LLM call failed:", {
-      status: err?.status,
-      message: err?.message,
-      error: err?.error,
-      type: err?.type,
-      code: err?.code,
-    });
-
-    // Return the real error to the extension so it's visible in the popup/network tab
-    const errorMessage = err?.message || err?.error?.message || "LLM call failed";
-    const errorDetails = err?.status ? ` (HTTP ${err.status})` : "";
-
-    return NextResponse.json(
-      {
-        error: `${errorMessage}${errorDetails}`,
-        details: err?.error || undefined,
-      },
-      { status: 500 }
-    );
+    console.error("add-source failed:", err);
+    putWorkspace(ws);
+    return NextResponse.json(ws);
   }
 }

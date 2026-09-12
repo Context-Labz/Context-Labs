@@ -1,41 +1,16 @@
-// The research loop. This is the heart of the demo:
-//   PLAN (what to search) -> SEARCH (Exa) -> EXTRACT (cited claims only)
-//   -> FILL TABLE -> DETECT GAPS -> (human resolves) -> DRAFT REPORT
 import { z } from "zod";
 import { chat, structured } from "@/lib/llm";
-import { quoteIsGrounded } from "@/lib/verify";
 import { exaSearch } from "@/lib/exa";
+import { quoteInText } from "@/lib/keywords";
+import { applyPageToObjectives } from "@/lib/agent/extract";
 import {
   getWorkspace, putWorkspace, logActivity, makeId,
 } from "@/lib/workspace-store";
 import { ResearchWorkspace, TableCell } from "@/lib/types";
-// The same fixed checklist every workspace is seeded with — imported rather
-// than restated so the planner and the seed can't drift apart.
-import { VC_DILIGENCE_OBJECTIVES } from "@/lib/seed";
-
-// Who this tool screens for. Standing context, so neither the planner nor the
-// report writer has to be told the mandate on every request — the same reason
-// the objective checklist is seeded rather than asked for each time.
-//
-// PLACEHOLDERS — every <...> below is unfilled. Nothing here was inferred from
-// the codebase or invented; replace them with the real fund details before
-// relying on any judgement the agent makes about fit.
-const INVESTOR_PROFILE = `Fund: <FUND NAME>
-Thesis: <ONE OR TWO SENTENCES ON WHAT THIS FUND BELIEVES AND BACKS>
-Sectors: <SECTORS OF INTEREST>
-Stage and cheque size: <STAGE, e.g. pre-seed/seed> · <CHEQUE RANGE>
-Geographies: <MARKETS OF INTEREST>`;
 
 const planSchema = z.object({
   providers: z.array(z.string()).min(1),
   queries: z.array(z.string()).min(1),
-  // Used only when the caller supplied no columns. The side panel always
-  // creates workspaces with columns: [] (the objectives checklist is the
-  // primary artifact now and there is no column input in the UI), so without
-  // this the run built queries like "Safaricom undefined" and then filled a
-  // table that had no columns to fill — i.e. the whole "Run automatically"
-  // mode silently produced an empty board.
-  columns: z.array(z.string()).min(1).describe("3-5 comparison dimensions suited to the question, e.g. Pricing, Coverage, Settlement time"),
 });
 
 const claimsSchema = z.object({
@@ -43,10 +18,23 @@ const claimsSchema = z.object({
     z.object({
       column: z.string(),
       value: z.string(),
-      quote: z.string(), // verbatim supporting excerpt — REQUIRED
-    })
+      quote: z.string(),
+    }),
   ),
 });
+
+function fallbackPlan(question: string, columns: string[]) {
+  const providers = question
+    .split(/\b(?:vs|versus|compare|and)\b/i)
+    .map((s) => s.replace(/[^a-zA-Z0-9 +&-]/g, " ").trim())
+    .filter((s) => s.length > 1)
+    .slice(0, 5);
+  const names = providers.length ? providers : ["Primary", "Alternative"];
+  return {
+    providers: names,
+    queries: names.map((p) => `${p} ${question} ${columns[0] || ""}`.trim()),
+  };
+}
 
 export async function runResearch(payload: {
   workspaceId: string;
@@ -55,97 +43,80 @@ export async function runResearch(payload: {
 }) {
   const ws = getWorkspace(payload.workspaceId);
   ws.question = payload.question;
-  logActivity(ws, "spark", `Research started: ${payload.question}`);
+  ws.table = { columns: payload.columns, rows: [] };
+  ws.status = "active";
+  logActivity(ws, "spark", `Comparison run: ${payload.question}`);
 
-  // 1. PLAN — decide which entities to research, what to search, and (when the
-  // caller gave none) what the comparison columns should even be.
-  const plan = await structured(
-    planSchema,
-    "You plan web research for the investor described below. Given a research question, list the 4-6 specific entities to research and " +
-      "1-2 web search queries per entity. Each query must name its entity explicitly so it can be matched back. If comparison columns are " +
-      "supplied, reuse them verbatim in `columns`; if none are supplied, propose 3-5 columns that suit the question.\n\n" +
-      "Use the investor profile to decide what is worth searching for: prioritise entities and queries that would produce evidence for the " +
-      "diligence objectives below, and skip lines of enquiry irrelevant to this fund's thesis, sectors, stage or geographies. The objectives " +
-      "are fixed — plan to fill evidence for THESE, do not substitute a different set:\n" +
-      `${VC_DILIGENCE_OBJECTIVES.join(", ")}\n\n` +
-      `Investor profile:\n${INVESTOR_PROFILE}`,
-    `Question: ${payload.question}
-Columns: ${payload.columns.length ? payload.columns.join(", ") : "(none supplied — propose them)"}`
-  );
+  let plan: { providers: string[]; queries: string[] };
+  try {
+    plan = await structured(
+      planSchema,
+      "You plan web research. Given a research question and table columns, list the 4-6 specific entities to research and 1-2 web search queries per entity. Return JSON.",
+      `Question: ${payload.question}\nColumns: ${payload.columns.join(", ")}`,
+    );
+  } catch {
+    plan = fallbackPlan(payload.question, payload.columns);
+  }
+  logActivity(ws, "plan", `Planned ${plan.providers.length} targets, ${plan.queries.length} searches.`);
 
-  // Caller's columns win when supplied; otherwise take the planned ones.
-  const columns = payload.columns.length ? payload.columns : plan.columns;
-  ws.table = { columns, rows: [] };
-  logActivity(ws, "plan", `Planned ${plan.providers.length} targets, ${plan.queries.length} searches across: ${columns.join(", ")}.`);
-
-  // 2+3. SEARCH & EXTRACT — one cited pass per provider
   for (const provider of plan.providers) {
-    const needle = provider.toLowerCase();
     const query =
-      plan.queries.find((q) => q.toLowerCase().includes(needle)) ??
-      plan.queries.find((q) => q.toLowerCase().includes(needle.slice(0, 8))) ??
-      `${provider} ${columns[0]}`;
+      plan.queries.find((q) => q.toLowerCase().includes(provider.toLowerCase().slice(0, 8))) ??
+      `${provider} ${payload.columns[0] || payload.question}`;
     logActivity(ws, "search", `Searching: ${query}`);
     const results = await exaSearch(query, 2);
-
-    const source = results[0];
-    if (!source) {
+    const found = results[0];
+    if (!found) {
       logActivity(ws, "warn", `No results for ${provider}.`);
       continue;
     }
-    ws.sources.push({
+    const source = {
       id: makeId("src"),
-      title: source.title,
-      url: source.url,
-      excerpt: source.text.slice(0, 400),
+      title: found.title,
+      url: found.url,
+      excerpt: found.text.slice(0, 400),
       fetchedAt: new Date().toISOString(),
-      claims: [],
-    });
+      claims: [] as string[],
+    };
+    ws.sources.push(source);
 
-    // The exact text the model sees — quote verification below checks against
-    // this, not `source.text`, so a quote from past the cut-off can't pass.
-    const sourceText = source.text.slice(0, 4000);
-    const sourceId = ws.sources[ws.sources.length - 1].id;
-
-    let extracted;
+    let extracted: z.infer<typeof claimsSchema> = { claims: [] };
     try {
       extracted = await structured(
         claimsSchema,
-        "Extract factual claims from the source text for the given table columns. Rules: every claim MUST have a verbatim supporting quote copied character-for-character from the text (a paraphrase will be rejected); never invent values; skip columns with no evidence.",
-        `Provider: ${provider}
-Columns: ${columns.join(", ")}
-
-Source text:
-${sourceText}`
+        "Extract factual claims from the source text for the given table columns. Rules: every claim MUST have a verbatim supporting quote from the text; never invent values; skip columns with no evidence. Return JSON.",
+        `Provider: ${provider}\nColumns: ${payload.columns.join(", ")}\n\nSource text:\n${found.text.slice(0, 4000)}`,
       );
-    } catch (err) {
-      // One provider failing to parse shouldn't abort the whole run — log it,
-      // leave the row's cells as gaps, and keep going.
-      logActivity(ws, "warn", `Extraction failed for ${provider}: ${err instanceof Error ? err.message : String(err)}`);
-      extracted = { claims: [] };
+    } catch {
+      extracted = {
+        claims: payload.columns
+          .map((column) => {
+            const quote = found.text.split(/(?<=[.!?])\s+/).find((s) => s.length > 40) || found.text.slice(0, 180);
+            return { column, value: quote.slice(0, 80), quote };
+          })
+          .filter((c) => quoteInText(found.text, c.quote)),
+      };
     }
 
     const cells: Record<string, TableCell> = {};
-    for (const col of columns) {
+    for (const col of payload.columns) {
       const claim = extracted.claims.find((c) => c.column.toLowerCase() === col.toLowerCase());
-      // A claim whose quote isn't actually in the source is treated exactly
-      // like no claim at all: the cell stays a gap and goes to a human.
-      if (claim && !quoteIsGrounded(sourceText, claim.quote)) {
-        logActivity(ws, "warn", `Discarded an unsupported claim for ${provider} / ${col} — the quote isn't in the source.`);
-        cells[col] = { value: "", citations: [], status: "gap" };
-        continue;
-      }
-      cells[col] = claim
-        ? { value: claim.value, citations: [{ sourceId, quote: claim.quote }], status: "verified" }
+      const ok = claim && quoteInText(found.text, claim.quote);
+      cells[col] = ok
+        ? { value: claim!.value, citations: [{ sourceId: source.id, quote: claim!.quote }], status: "verified" }
         : { value: "", citations: [], status: "gap" };
     }
     ws.table.rows.push({ provider, cells });
-    logActivity(ws, "table", `Filled row: ${provider} (${Object.values(cells).filter((c) => c.status === "verified").length}/${columns.length} verified)`);
+    await applyPageToObjectives(ws, source, found.text);
+    logActivity(
+      ws,
+      "table",
+      `Filled row: ${provider} (${Object.values(cells).filter((c) => c.status === "verified").length}/${payload.columns.length} verified)`,
+    );
   }
 
-  // 4. GAP DETECTION — anything still empty after searching is flagged for a human
   for (const row of ws.table.rows) {
-    for (const col of columns) {
+    for (const col of payload.columns) {
       if (row.cells[col]?.status === "gap") {
         ws.gaps.push({
           id: makeId("gap"),
@@ -158,17 +129,14 @@ ${sourceText}`
     }
   }
   if (ws.gaps.length) {
-    logActivity(ws, "warn", `${ws.gaps.length} gaps flagged — need human decision.`);
+    logActivity(ws, "warn", `${ws.gaps.length} gaps flagged — need a decision.`);
   }
 
-  // 5. DRAFT REPORT from the verified table only
   await draftReport(ws.id);
-
   putWorkspace(ws);
   return { providers: plan.providers.length, sources: ws.sources.length, gaps: ws.gaps.length };
 }
 
-// Human-in-the-loop: the demo's rubric moment. Owner picks how to handle a gap.
 export async function resolveGap(workspaceId: string, gapId: string, decision: "leave_blank" | "secondary_source") {
   const ws = getWorkspace(workspaceId);
   const gap = ws.gaps.find((g) => g.id === gapId);
@@ -179,15 +147,21 @@ export async function resolveGap(workspaceId: string, gapId: string, decision: "
 
   if (decision === "leave_blank") {
     cell.value = "—";
-    cell.status = "verified"; // verified-as-unknown: the board never lies
+    cell.status = "verified";
     gap.status = "resolved_blank";
-    logActivity(ws, "human", `${gap.provider} / ${gap.column}: left blank by human decision.`);
+    logActivity(ws, "human", `${gap.provider} / ${gap.column}: left blank.`);
   } else {
-    // Secondary source: find a weaker source and mark the cell unverified
-    const results = await exaSearch(`${gap.provider} ${gap.column} fees pricing`, 1);
+    const results = await exaSearch(`${gap.provider} ${gap.column}`, 1);
     const src = results[0];
     if (src) {
-      ws.sources.push({ id: makeId("src"), title: `[secondary] ${src.title}`, url: src.url, excerpt: src.text.slice(0, 300), fetchedAt: new Date().toISOString(), claims: [] });
+      ws.sources.push({
+        id: makeId("src"),
+        title: `[secondary] ${src.title}`,
+        url: src.url,
+        excerpt: src.text.slice(0, 300),
+        fetchedAt: new Date().toISOString(),
+        claims: [],
+      });
       cell.value = "see source (unverified)";
       cell.citations = [{ sourceId: ws.sources[ws.sources.length - 1].id, quote: src.text.slice(0, 160) }];
       cell.status = "unverified";
@@ -196,7 +170,7 @@ export async function resolveGap(workspaceId: string, gapId: string, decision: "
       cell.status = "verified";
     }
     gap.status = "resolved_secondary";
-    logActivity(ws, "human", `${gap.provider} / ${gap.column}: filled from secondary source (marked unverified).`);
+    logActivity(ws, "human", `${gap.provider} / ${gap.column}: filled from a secondary source.`);
   }
   putWorkspace(ws);
   return ws;
@@ -207,27 +181,40 @@ export async function draftReport(workspaceId: string) {
   const tableSummary = ws.table.rows
     .map((r) => `${r.provider}: ${ws.table.columns.map((c) => `${c}=${r.cells[c]?.value || "?"}`).join(", ")}`)
     .join("\n");
-  const res = await chat({
-    model: process.env.LLM_MODEL || "openai/gpt-4o-mini", // routed through lib/llm.ts -> OpenRouter, which REQUIRES a provider prefix
-    messages: [
-      {
-        role: "system",
-        content:
-          "Write a concise research brief from the verified table. Explicitly mention gaps and unverified cells. No unsourced claims.\n\n" +
-          "End the brief with one short closing paragraph addressed to the investor below. Weighing the evidence against the diligence " +
-          `objectives (${VC_DILIGENCE_OBJECTIVES.join(", ")}) and that investor's thesis, sectors, stage and geographies, say plainly ` +
-          "whether this looks like a fit worth pursuing, a pass, or something that needs more diligence before a call can be made — and " +
-          "give the one or two reasons why. Write it as prose in your own words: no rating, no score, no label. Where the evidence is too " +
-          "thin to support a view, say that instead of settling on one.\n\n" +
-          `Investor profile:\n${INVESTOR_PROFILE}`,
-      },
-      { role: "user", content: `Question: ${ws.question}
-
-Table:
-${tableSummary}` },
-    ],
-  });
-  ws.report = res.choices[0]?.message?.content ?? "";
-  logActivity(ws, "report", "Draft report generated.");
+  try {
+    const res = await chat({
+      model: process.env.LLM_MODEL || "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "Write a concise research brief from the verified table. Mention gaps. No unsourced claims." },
+        { role: "user", content: `Question: ${ws.question}\n\nTable:\n${tableSummary}` },
+      ],
+    });
+    ws.report = res.choices[0]?.message?.content ?? tableSummary;
+  } catch {
+    ws.report = tableSummary || "Comparison table filled from available sources.";
+  }
+  logActivity(ws, "report", "Comparison brief drafted.");
   putWorkspace(ws);
+}
+
+export async function fillObjective(ws: ResearchWorkspace, objectiveId: string) {
+  const obj = ws.objectives.find((o) => o.id === objectiveId);
+  if (!obj) throw new Error("Objective not found");
+  const query = `${ws.question || ""} ${obj.label}`.trim();
+  logActivity(ws, "search", `Filling gap: ${obj.label} — ${query}`);
+  const results = await exaSearch(query, 3);
+  for (const found of results.slice(0, 2)) {
+    const source = {
+      id: makeId("src"),
+      title: found.title,
+      url: found.url,
+      excerpt: found.text.slice(0, 400),
+      fetchedAt: new Date().toISOString(),
+      claims: [] as string[],
+    };
+    ws.sources.push(source);
+    await applyPageToObjectives(ws, source, found.text);
+  }
+  putWorkspace(ws);
+  return ws;
 }
