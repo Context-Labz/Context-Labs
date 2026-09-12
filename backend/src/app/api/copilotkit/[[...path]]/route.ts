@@ -28,7 +28,10 @@ import {
   InMemoryAgentRunner,
   BuiltInAgent,
   defineTool,
+  type BuiltInAgentModel,
 } from "@copilotkit/runtime/v2";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import type { LanguageModel } from "ai";
 import { z } from "zod";
 import { exaSearch } from "@/lib/exa";
 import { getWorkspace, putWorkspace, logActivity, makeId } from "@/lib/workspace-store";
@@ -231,43 +234,69 @@ const tools = [
 // "no claim without a source" is ENFORCED, not just prompted. (Judge note.)
 // ─────────────────────────────────────────────────────────────────────────
 
-// Guard against the exact footgun above: a bare model name here is fatal at
-// RUN time (the sidebar just shows an error after you hit send), not at boot,
-// so catch it at boot instead and fall back to a valid default.
-function agentModel(): string {
-  const configured = process.env.COPILOT_AGENT_MODEL?.trim();
-  if (!configured) return "openai/gpt-4o-mini";
+// ANSWER to the TODO below: BuiltInAgent CANNOT reach OpenRouter on its own.
+// Given a model STRING it runs CopilotKit's own resolveModel(), which maps the
+// prefix to a native provider, strips it, and calls OpenAI directly with the
+// bare name using OPENAI_API_KEY. Confirmed by probing what it actually sends:
+//
+//   model sent to provider : gpt-4o-mini        <- prefix stripped
+//   tools advertised       : search_web, add_source, ... (all 7)
+//
+// So with only OpenRouter credits the chat path dies at send time while every
+// other path works — which is exactly the "I get no response back" symptom.
+//
+// BUT `model` is typed `BuiltInAgentModel | LanguageModel`, so we can hand it a
+// Vercel AI SDK model instance instead of a string and bypass resolveModel
+// entirely. @ai-sdk/openai-compatible speaks Chat Completions (NOT the
+// Responses API that the native OpenAI provider uses, and which OpenRouter does
+// not implement), so it is the correct provider for OpenRouter.
+function agentModel(): BuiltInAgentModel | LanguageModel {
+  const configured = process.env.COPILOT_AGENT_MODEL?.trim() || "openai/gpt-4o-mini";
+
+  // Both OpenRouter ids and CopilotKit's enum are provider-prefixed. A bare
+  // name is fatal at RUN time (the sidebar just errors after you hit send)
+  // rather than at boot, so catch it at boot instead.
   if (!configured.includes("/")) {
     console.warn(
       `[research-room] COPILOT_AGENT_MODEL="${configured}" has no provider prefix; ` +
-        `the CopilotKit agent requires one (e.g. "openai/${configured}"). Falling back to openai/gpt-4o-mini.`
+        `it must look like "openai/gpt-4o-mini". Falling back to that default.`
     );
-    return "openai/gpt-4o-mini";
+    return openRouterOr("openai/gpt-4o-mini");
   }
-  return configured;
+  return openRouterOr(configured);
+}
+
+// Route through OpenRouter when we have a key for it; otherwise fall back to
+// CopilotKit's built-in resolution against OPENAI_API_KEY.
+function openRouterOr(modelId: string): BuiltInAgentModel | LanguageModel {
+  const key = process.env.OPENROUTER_API_KEY?.trim();
+  if (key && !key.startsWith("your_")) {
+    return createOpenAICompatible({
+      name: "openrouter",
+      // Overridable so this can point at any OpenAI-compatible endpoint (a
+      // proxy, a local model server) without a code change.
+      baseURL: process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1",
+      apiKey: key,
+    }).chatModel(modelId);
+  }
+  return modelId as BuiltInAgentModel;
 }
 
 const runtime = new CopilotRuntime({
   agents: {
     default: new BuiltInAgent({
-      // TODO (from the OpenRouter switch): verify BuiltInAgent can reach
-      // OpenRouter at all. The rest of the backend now uses OpenRouter as
-      // primary, but BuiltInAgent may use its own internal client that only
-      // talks to native providers — in which case this chat path still needs
-      // OPENAI_API_KEY set, and COPILOT_AGENT_MODEL must stay inside the
-      // enum below rather than being any OpenRouter model string.
-      // NOTE the separate env var. Both this agent and lib/llm.ts now want a
-      // provider-prefixed string, but they validate against DIFFERENT lists:
-      // llm.ts accepts anything in OpenRouter's catalogue, while this agent
-      // accepts only the BuiltInAgentModel union below. Sharing one var means
-      // any OpenRouter-only model set for llm.ts kills every chat run with
-      // RUN_ERROR: Invalid model string. Keep them separate.
-      // Valid values are the BuiltInAgentModel union in
-      // @copilotkit/runtime@1.71.0: openai/gpt-5, openai/gpt-5-mini,
-      // openai/gpt-4.1{,-mini,-nano}, openai/gpt-4o{,-mini}, openai/o3{,-mini},
-      // openai/o4-mini, anthropic/claude-sonnet-4-{5,6},
+      // Resolved by agentModel() above — an OpenRouter-backed AI SDK model
+      // when OPENROUTER_API_KEY is set, otherwise CopilotKit's own OpenAI
+      // resolution against OPENAI_API_KEY.
+      //
+      // The env var stays separate from llm.ts's LLM_MODEL because the two
+      // paths validate against DIFFERENT lists when no OpenRouter key is
+      // present: llm.ts takes anything in OpenRouter's catalogue, while
+      // CopilotKit's string path takes only the BuiltInAgentModel union
+      // (openai/gpt-5{,-mini}, openai/gpt-4.1{,-mini,-nano}, openai/gpt-4o{,-mini},
+      // openai/o3{,-mini}, openai/o4-mini, anthropic/claude-sonnet-4-{5,6},
       // anthropic/claude-opus-4-8, anthropic/claude-haiku-4-5,
-      // google/gemini-2.5-{pro,flash,flash-lite}.
+      // google/gemini-2.5-{pro,flash,flash-lite}). One var cannot satisfy both.
       model: agentModel(),
       tools,
       // Default is 1 — far too low to chain search → cite → fill. One
