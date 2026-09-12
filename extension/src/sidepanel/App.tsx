@@ -8,7 +8,6 @@ import ActivityFeed from "./components/ActivityFeed";
 import GapBanner from "./components/GapBanner";
 import ResearchPlanView from "./components/ResearchPlanView";
 import ReportView from "./components/ReportView";
-import CapturePageButton from "./components/CapturePageButton";
 
 // Table columns are now the OPTIONAL secondary "compare named
 // competitors" mode — the primary artifact is the objectives checklist
@@ -226,74 +225,95 @@ export default function App() {
   };
 
   if (loading || !ws) {
-    return <div className="p-4 text-sm text-zinc-500">Loading workspace…</div>;
+    return (
+      <div className="flex items-center justify-center h-full p-4">
+        <div className="text-center space-y-2">
+          <div className="text-sm font-medium text-zinc-700">Loading workspace…</div>
+          <div className="text-xs text-zinc-500">Connecting to Research Room</div>
+        </div>
+      </div>
+    );
   }
 
   return (
-    <div className="p-4 space-y-4">
-      <ResearchHeader ws={ws} />
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div className="flex-shrink-0 p-4 border-b border-zinc-200">
+        <ResearchHeader ws={ws} />
+      </div>
 
-      {detectedQuery && (
-        <div className="flex items-center justify-between gap-2 p-2 bg-blue-50 border border-blue-200 rounded">
-          <span className="text-sm">
-            🔍 You searched: "<strong>{detectedQuery}</strong>"
-          </span>
-          <button
-            onClick={() => captureCurrentPage(false)}
-            disabled={capturing}
-            className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
-          >
-            {capturing ? "Capturing…" : "Capture"}
-          </button>
-        </div>
-      )}
-
-      {relevantObjective && (
-        <div className="flex items-center justify-between gap-2 p-2 bg-green-50 border border-green-200 rounded">
-          <span className="text-sm">
-            📄 This page looks relevant to <strong>{relevantObjective}</strong>
-          </span>
-          <button
-            onClick={() => captureCurrentPage(false)}
-            disabled={capturing}
-            className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 whitespace-nowrap"
-          >
-            {capturing ? "Capturing…" : "Capture"}
-          </button>
-        </div>
-      )}
-
-      {highlightedText && (
-        <div className="flex items-center justify-between gap-2 p-2 bg-yellow-50 border border-yellow-200 rounded">
-          <span className="text-sm">
-            ✏️ Highlighted: "{highlightedText.text.slice(0, 60)}..."
-          </span>
-          <div className="flex gap-1">
+      {/* Smart banners - ambient research signals */}
+      <div className="flex-shrink-0 p-4 space-y-2">
+        {detectedQuery && (
+          <div className="flex items-center justify-between gap-2 p-3 bg-blue-50 border border-blue-200 rounded-lg shadow-sm">
+            <span className="text-sm">
+              🔍 You searched: "<strong>{detectedQuery}</strong>"
+            </span>
             <button
-              onClick={() => captureHighlight()}
+              onClick={() => captureCurrentPage(false)}
               disabled={capturing}
-              className="px-2 py-1 text-xs bg-yellow-600 text-white rounded hover:bg-yellow-700 disabled:opacity-50 whitespace-nowrap"
+              className="px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap transition-colors"
             >
-              {capturing ? "Saving…" : "Save"}
-            </button>
-            <button
-              onClick={() => setHighlightedText(null)}
-              className="px-2 py-1 text-xs bg-gray-400 text-white rounded hover:bg-gray-500 whitespace-nowrap"
-            >
-              Dismiss
+              {capturing ? "Capturing…" : "Capture"}
             </button>
           </div>
+        )}
+
+        {relevantObjective && (
+          <div className="flex items-center justify-between gap-2 p-3 bg-green-50 border border-green-200 rounded-lg shadow-sm">
+            <span className="text-sm">
+              📄 This page looks relevant to <strong>{relevantObjective}</strong>
+            </span>
+            <button
+              onClick={() => captureCurrentPage(false)}
+              disabled={capturing}
+              className="px-3 py-1.5 text-xs font-medium bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap transition-colors"
+            >
+              {capturing ? "Capturing…" : "Capture"}
+            </button>
+          </div>
+        )}
+
+        {highlightedText && (
+          <div className="flex items-center justify-between gap-2 p-3 bg-yellow-50 border border-yellow-200 rounded-lg shadow-sm">
+            <span className="text-sm">
+              ✏️ Highlighted: "{highlightedText.text.slice(0, 60)}..."
+            </span>
+            <div className="flex gap-1.5">
+              <button
+                onClick={() => captureHighlight()}
+                disabled={capturing}
+                className="px-3 py-1.5 text-xs font-medium bg-yellow-600 text-white rounded-md hover:bg-yellow-700 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap transition-colors"
+              >
+                {capturing ? "Saving…" : "Save"}
+              </button>
+              <button
+                onClick={() => setHighlightedText(null)}
+                className="px-3 py-1.5 text-xs font-medium bg-gray-400 text-white rounded-md hover:bg-gray-500 whitespace-nowrap transition-colors"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Main content - scrollable */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-6">
+        {/* Primary research plan */}
+        <div className="space-y-3">
+          <ResearchPlanView ws={ws} onResolved={setWs} />
+          <GapBanner ws={ws} onResolved={setWs} />
         </div>
-      )}
 
-      <ResearchPlanView ws={ws} onResolved={setWs} />
-      <CapturePageButton workspaceId={ws.id} onCaptured={refresh} />
-      <GapBanner ws={ws} onResolved={setWs} />
-
-      <ComparisonTableView ws={ws} />
-        <ReportView ws={ws} />
-        <SourcesPanel ws={ws} />
-        <ActivityFeed ws={ws} />
+        {/* Supporting views */}
+        <div className="space-y-4 pt-4 border-t border-zinc-200">
+          <ComparisonTableView ws={ws} />
+          <ReportView ws={ws} />
+          <SourcesPanel ws={ws} />
+          <ActivityFeed ws={ws} />
+        </div>
+      </div>
     </div>
   );
 }
