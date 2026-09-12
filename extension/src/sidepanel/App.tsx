@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { CopilotKit } from "@copilotkit/react-core/v2";
-import "@copilotkit/react-core/v2/styles.css";
 import { ResearchWorkspace } from "@/lib/types";
 import { api } from "@/lib/api";
 import ResearchHeader from "./components/ResearchHeader";
