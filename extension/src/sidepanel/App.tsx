@@ -32,6 +32,7 @@ export default function App() {
   const [detectedQuery, setDetectedQuery] = useState<string | null>(null);
   const [relevantObjective, setRelevantObjective] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
+  const [capturedUrls, setCapturedUrls] = useState<Set<string>>(new Set());
 
   // FIX (was gap #2 in the review): a workspace must exist on the backend
   // before anything else touches it. This is the one explicit place that
@@ -113,28 +114,74 @@ export default function App() {
     };
   }, []);
 
+  // Auto-capture on tab navigation (ambient research mode)
+  useEffect(() => {
+    if (!ws || capturing) return;
+
+    const handleTabUpdate = async (tabId: number, changeInfo: chrome.tabs.TabChangeInfo, tab: chrome.tabs.Tab) => {
+      // Only capture when page finishes loading
+      if (changeInfo.status !== "complete") return;
+      if (!tab.url || !tab.title) return;
+
+      // Skip special pages
+      if (
+        tab.url.startsWith("chrome://") ||
+        tab.url.startsWith("chrome-extension://") ||
+        tab.url.startsWith("about:") ||
+        tab.url === "about:blank" ||
+        tab.url.startsWith("edge://")
+      ) return;
+
+      // Skip if already captured this URL
+      if (capturedUrls.has(tab.url)) return;
+
+      // Skip search results pages (user can manually capture those)
+      if (tab.url.includes("google.") && tab.url.includes("q=")) return;
+      if (tab.url.includes("bing.") && tab.url.includes("q=")) return;
+
+      // Auto-capture silently
+      captureCurrentPage(true);
+    };
+
+    chrome.tabs.onUpdated.addListener(handleTabUpdate);
+    return () => chrome.tabs.onUpdated.removeListener(handleTabUpdate);
+  }, [ws, capturing, capturedUrls]);
+
   const refresh = async () => {
     if (ws) setWs(await api.getWorkspace(ws.id));
   };
 
   // Unified capture function - captures current page and populates objectives
-  const captureCurrentPage = () => {
+  const captureCurrentPage = (silent = false) => {
     if (!ws) return;
     setCapturing(true);
     chrome.runtime.sendMessage({ type: "CAPTURE_PAGE" }, async (page: any) => {
       if (!page || page.error) {
-        alert(page?.error ?? "Could not read the current page.");
+        if (!silent) alert(page?.error ?? "Could not read the current page.");
         setCapturing(false);
         return;
       }
       try {
-        await api.addCapturedSource(ws.id, { title: page.title, url: page.url, text: page.bodyText }, undefined);
+        // Add 20s timeout to prevent hanging
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Capture timeout")), 20000)
+        );
+        await Promise.race([
+          api.addCapturedSource(ws.id, { title: page.title, url: page.url, text: page.bodyText }, undefined),
+          timeoutPromise,
+        ]);
+        // Track captured URL to prevent duplicates
+        setCapturedUrls((prev) => new Set(prev).add(page.url));
         // Clear banners after successful capture
         setDetectedQuery(null);
         setRelevantObjective(null);
         refresh();
-      } catch {
-        alert("Couldn't save this page — check the backend logs.");
+      } catch (err: any) {
+        if (!silent) {
+          alert(err?.message === "Capture timeout"
+            ? "Page capture timed out — try again or skip this page."
+            : "Couldn't save this page — check the backend logs.");
+        }
       } finally {
         setCapturing(false);
       }
@@ -155,7 +202,7 @@ export default function App() {
             🔍 You searched: "<strong>{detectedQuery}</strong>"
           </span>
           <button
-            onClick={captureCurrentPage}
+            onClick={() => captureCurrentPage(false)}
             disabled={capturing}
             className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
           >
@@ -170,7 +217,7 @@ export default function App() {
             📄 This page looks relevant to <strong>{relevantObjective}</strong>
           </span>
           <button
-            onClick={captureCurrentPage}
+            onClick={() => captureCurrentPage(false)}
             disabled={capturing}
             className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 whitespace-nowrap"
           >
