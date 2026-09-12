@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { CopilotKit } from "@copilotkit/react-core/v2";
+import "@copilotkit/react-core/v2/styles.css";
 import { ResearchWorkspace } from "@/lib/types";
 import { api } from "@/lib/api";
 import ResearchHeader from "./components/ResearchHeader";
@@ -8,6 +10,7 @@ import ActivityFeed from "./components/ActivityFeed";
 import GapBanner from "./components/GapBanner";
 import ResearchPlanView from "./components/ResearchPlanView";
 import ReportView from "./components/ReportView";
+import CapturePageButton from "./components/CapturePageButton";
 
 // Table columns are now the OPTIONAL secondary "compare named
 // competitors" mode — the primary artifact is the objectives checklist
@@ -28,6 +31,7 @@ const OBJECTIVE_KEYWORDS: Record<string, string[]> = {
 export default function App() {
   const [ws, setWs] = useState<ResearchWorkspace | null>(null);
   const [loading, setLoading] = useState(true);
+  const [running, setRunning] = useState(false);
   const [detectedQuery, setDetectedQuery] = useState<string | null>(null);
   const [relevantObjective, setRelevantObjective] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
@@ -224,6 +228,19 @@ export default function App() {
     }
   };
 
+  // Run automated research using Exa
+  const runAutomatically = async () => {
+    if (!ws || !ws.question.trim()) return;
+    setRunning(true);
+    try {
+      setWs(await api.startResearch(ws.id, ws.question, ws.table.columns));
+    } catch (err) {
+      alert(`Auto-run failed — ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setRunning(false);
+    }
+  };
+
   if (loading || !ws) {
     return (
       <div className="flex items-center justify-center h-full p-4">
@@ -236,11 +253,12 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex-shrink-0 p-4 border-b border-zinc-200">
-        <ResearchHeader ws={ws} />
-      </div>
+    <CopilotKit runtimeUrl={`${api.backendUrl}/api/copilotkit`}>
+      <div className="flex flex-col h-full">
+        {/* Header */}
+        <div className="flex-shrink-0 p-4 border-b border-zinc-200">
+          <ResearchHeader ws={ws} onQuestionSaved={setWs} />
+        </div>
 
       {/* Smart banners - ambient research signals */}
       <div className="flex-shrink-0 p-4 space-y-2">
@@ -300,11 +318,39 @@ export default function App() {
 
       {/* Main content - scrollable */}
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
+        {/* Explanatory text */}
+        <p className="text-xs text-zinc-500">
+          Objectives below are the default startup/market diligence checklist. Browse and use
+          "Capture" buttons to map evidence onto them — or chat with the agent directly.
+        </p>
+
         {/* Primary research plan */}
         <div className="space-y-3">
           <ResearchPlanView ws={ws} onResolved={setWs} />
+          <CapturePageButton workspaceId={ws.id} onCaptured={refresh} />
           <GapBanner ws={ws} onResolved={setWs} />
         </div>
+
+        {/* Optional competitor comparison */}
+        <details className="text-sm">
+          <summary className="cursor-pointer text-zinc-500 hover:text-zinc-700">
+            Optional: compare named competitors on specific columns
+          </summary>
+          <div className="flex items-center gap-2 mt-3 p-3 bg-zinc-50 rounded-lg">
+            <p className="flex-1 text-xs text-zinc-500">
+              {ws.question
+                ? <>Runs live Exa research for <span className="text-zinc-700 font-medium">"{ws.question}"</span> and fills a cited comparison table. Columns are proposed automatically.</>
+                : "Set a research question in the header first."}
+            </p>
+            <button
+              onClick={runAutomatically}
+              disabled={running || !ws.question.trim()}
+              className="px-3 py-1.5 text-xs font-medium bg-emerald-700 text-white rounded-md hover:bg-emerald-800 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap transition-colors"
+            >
+              {running ? "Running…" : "Run automatically"}
+            </button>
+          </div>
+        </details>
 
         {/* Supporting views */}
         <div className="space-y-4 pt-4 border-t border-zinc-200">
@@ -315,5 +361,6 @@ export default function App() {
         </div>
       </div>
     </div>
+    </CopilotKit>
   );
 }

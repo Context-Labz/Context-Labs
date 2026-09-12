@@ -23,6 +23,13 @@ export const api = {
   getWorkspace: (id: string) =>
     fetch(`${BACKEND_URL}/api/workspace?id=${encodeURIComponent(id)}`).then((r) => asJson<ResearchWorkspace>(r)),
 
+  setQuestion: (workspaceId: string, question: string) =>
+    fetch(`${BACKEND_URL}/api/workspace`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspaceId, question }),
+    }).then((r) => asJson<ResearchWorkspace>(r)),
+
   startResearch: (workspaceId: string, question: string, columns: string[]) =>
     fetch(`${BACKEND_URL}/api/research/start`, {
       method: "POST",
