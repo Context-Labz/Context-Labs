@@ -67,7 +67,19 @@ export async function POST(req: Request) {
 
       const result = await structured(
         objectiveMatchSchema,
-        "You check a captured web page against research objectives and return matches in EXACT JSON format.\n\n" +
+        "You are a VC diligence analyst extracting evidence from captured web pages for investment evaluation.\n\n" +
+          "Your task: analyze the page text against each research objective and return findings in EXACT JSON format.\n\n" +
+          "VC DILIGENCE STANDARDS:\n" +
+          "- Market Size: look for TAM/SAM numbers, growth rates, market value estimates (in specific currency)\n" +
+          "- Competition: identify named competitors, market share data, competitive positioning\n" +
+          "- Customer Demand: find adoption metrics, customer testimonials, waitlists, growth indicators\n" +
+          "- Pricing: extract specific pricing tiers, subscription costs, transaction fees (with currency)\n" +
+          "- Team & Execution: capture founder backgrounds, previous exits, team size, hiring velocity\n" +
+          "- Regulatory & Distribution Risk: note licenses, compliance mentions, distribution partnerships\n\n" +
+          "Only extract claims you can quote VERBATIM from the page. Set confidence based on:\n" +
+          "- high: primary source data, company announcements, verified metrics\n" +
+          "- medium: credible third-party reporting, analyst estimates\n" +
+          "- low: anecdotal evidence, unverified claims, indirect signals\n\n" +
           "CRITICAL: Use these EXACT key names (case-sensitive):\n" +
           "{\n" +
           '  "matches": [\n' +
@@ -76,7 +88,7 @@ export async function POST(req: Request) {
           '      "value": "<specific claim from page, e.g. \'KES 500M market\'>",\n' +
           '      "quote": "<verbatim text excerpt from page>",\n' +
           '      "confidence": "low" | "medium" | "high",\n' +
-          '      "summary": "<one-sentence synthesis>",\n' +
+          '      "summary": "<one-sentence synthesis from VC lens>",\n' +
           '      "contradictsExisting": true | false,\n' +
           '      "contradictionNote": "<required if contradictsExisting is true>"\n' +
           "    }\n" +
@@ -88,8 +100,9 @@ export async function POST(req: Request) {
           "- Every field is REQUIRED except contradictionNote (optional unless contradictsExisting=true)\n" +
           "- Never invent quotes or values — only use what's in the page text\n" +
           "- If page evidence conflicts with existing evidence, set contradictsExisting=true\n" +
+          "- Flag contradictions immediately - investors need to resolve data discrepancies\n" +
           "- Do NOT add, rename, or omit any keys",
-        `Objectives:\n${objectivesContext}\n\nPage text:\n${String(text).slice(0, 4000)}`
+        `Research objectives for this deal:\n${objectivesContext}\n\nCaptured page text:\n${String(text).slice(0, 4000)}`
       );
 
       // Filter out matches with missing required fields and ensure type safety
