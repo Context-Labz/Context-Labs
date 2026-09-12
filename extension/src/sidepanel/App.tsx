@@ -21,6 +21,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [question, setQuestion] = useState("");
   const [running, setRunning] = useState(false);
+  const [detectedQuery, setDetectedQuery] = useState<string | null>(null);
 
   // FIX (was gap #2 in the review): a workspace must exist on the backend
   // before anything else touches it. This is the one explicit place that
@@ -46,8 +47,26 @@ export default function App() {
     })().finally(() => setLoading(false));
   }, []);
 
+  // Listen for search query detection from content script
+  useEffect(() => {
+    const handleMessage = (msg: any) => {
+      if (msg?.type === "SEARCH_DETECTED" && msg?.query) {
+        setDetectedQuery(msg.query);
+      }
+    };
+    chrome.runtime.onMessage.addListener(handleMessage);
+    return () => chrome.runtime.onMessage.removeListener(handleMessage);
+  }, []);
+
   const refresh = async () => {
     if (ws) setWs(await api.getWorkspace(ws.id));
+  };
+
+  const trackSearch = () => {
+    if (detectedQuery) {
+      setQuestion(detectedQuery);
+      setDetectedQuery(null); // Clear the banner after tracking
+    }
   };
 
   const runAutomatically = async () => {
@@ -67,6 +86,20 @@ export default function App() {
   return (
     <div className="p-4 space-y-4">
       <ResearchHeader ws={ws} />
+
+      {detectedQuery && (
+        <div className="flex items-center justify-between gap-2 p-2 bg-blue-50 border border-blue-200 rounded">
+          <span className="text-sm">
+            🔍 You searched: "<strong>{detectedQuery}</strong>"
+          </span>
+          <button
+            onClick={trackSearch}
+            className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 whitespace-nowrap"
+          >
+            Track this search
+          </button>
+        </div>
+      )}
 
       <div className="flex items-center gap-2">
         <input
