@@ -2,51 +2,31 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Custom styling for CopilotKit send button - comprehensive selectors for v2 */
-/* CopilotKit v2 uses various button structures, targeting them all */
-
-/* Primary targets: any button in the chat input area */
-div[class*="input"] button:not(:disabled),
-div[class*="Input"] button:not(:disabled),
-div[class*="chat"] button[type="button"]:not(:disabled),
-div[class*="Chat"] button[type="button"]:not(:disabled),
-button[class*="send"]:not(:disabled),
-button[class*="Send"]:not(:disabled),
-button[class*="submit"]:not(:disabled),
-button[class*="Submit"]:not(:disabled) {
-  background-color: #059669 !important; /* emerald-600 */
-  color: white !important;
-  transition: background-color 0.2s ease !important;
-  border-radius: 0.5rem !important;
+:root {
+  --bg: #10100e;
+  --bg-2: #171613;
+  --line: #2c2924;
+  --ink: #f3efe7;
+  --mute: #9a9488;
+  --faint: #6b665c;
+  --brass: #d4a574;
 }
 
-div[class*="input"] button:not(:disabled):hover,
-div[class*="Input"] button:not(:disabled):hover,
-div[class*="chat"] button[type="button"]:not(:disabled):hover,
-button[class*="send"]:not(:disabled):hover,
-button[class*="Send"]:not(:disabled):hover {
-  background-color: #047857 !important; /* emerald-700 */
+html, body, #root {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
 }
 
-/* Disabled state - gray */
-div[class*="input"] button:disabled,
-div[class*="Input"] button:disabled,
-div[class*="chat"] button:disabled,
-button[class*="send"]:disabled,
-button[class*="Send"]:disabled {
-  background-color: #d4d4d8 !important; /* zinc-300 */
-  color: #a1a1aa !important; /* zinc-400 */
-  opacity: 0.6 !important;
+::selection {
+  background: rgba(212, 165, 116, 0.35);
 }
 
-/* Nuclear option: target ALL buttons in CopilotKit's sidebar that aren't explicitly styled */
-[class*="copilot"] button:not([class*="close"]):not([class*="Close"]):not(:disabled) {
-  background-color: #059669 !important;
-  color: white !important;
+.font-serif {
+  font-family: Newsreader, Georgia, serif;
 }
 
-[class*="copilot"] button:not([class*="close"]):not([class*="Close"]):disabled {
-  background-color: #d4d4d8 !important;
-  color: #a1a1aa !important;
-  opacity: 0.6 !important;
-}
+.panel-scroll::-webkit-scrollbar { width: 8px; }
+.panel-scroll::-webkit-scrollbar-thumb { background: #3a362f; border-radius: 99px; }

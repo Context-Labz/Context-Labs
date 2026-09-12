@@ -1,46 +1,19 @@
-import { useEffect, useState } from "react";
-import { CopilotKit, useAgentContext, CopilotSidebar } from "@copilotkit/react-core/v2";
-import "@copilotkit/react-core/v2/styles.css";
-import { ResearchWorkspace } from "@/lib/types";
+import { useCallback, useEffect, useState } from "react";
+import { PageContext, ResearchWorkspace } from "@/lib/types";
 import { api } from "@/lib/api";
-import ResearchHeader from "./components/ResearchHeader";
-import SourcesPanel from "./components/SourcesPanel";
-import ComparisonTableView from "./components/ComparisonTableView";
-import ActivityFeed from "./components/ActivityFeed";
-import GapBanner from "./components/GapBanner";
-import ResearchPlanView from "./components/ResearchPlanView";
-import ReportView from "./components/ReportView";
-import CapturePageButton from "./components/CapturePageButton";
+import ResearchPanel from "./Panel";
 
-// Table columns are now the OPTIONAL secondary "compare named
-// competitors" mode — the primary artifact is the objectives checklist
-// seeded server-side by default (useVcTemplate: true in createWorkspace).
-const DEFAULT_COLUMNS: string[] = [];
-const STORAGE_KEY = "research-room:workspace-id";
-
-// Plain string matching against a per-objective vocabulary — deliberately NO
-// AI in the panel. Keys must match the objective labels the backend seeds.
-const OBJECTIVE_KEYWORDS: Record<string, string[]> = {
-  "Market Size": ["market size", "market value", "tam", "billion", "valued at"],
-  "Competition": ["competitor", "vs", "alternative", "rival", "market share"],
-  "Customer Demand": ["demand", "customers want", "adoption", "growth rate"],
-  "Pricing": ["price", "pricing", "per month", "fee", "subscription", "$", "kes"],
-  "Team & Execution": ["founder", "ceo", "co-founder", "team", "leadership"],
-  "Regulatory & Distribution Risk": ["regulation", "license", "compliance", "law", "distribution"],
-};
+const STORAGE_KEY = "context-labs:workspace-id";
 
 export default function App() {
   const [ws, setWs] = useState<ResearchWorkspace | null>(null);
   const [loading, setLoading] = useState(true);
-  const [running, setRunning] = useState(false);
-  const [detectedQuery, setDetectedQuery] = useState<string | null>(null);
-  const [relevantObjective, setRelevantObjective] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [current, setCurrent] = useState<{ title?: string; url?: string }>({});
+  const [selectedText, setSelectedText] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
 
-  // FIX (was gap #2 in the review): a workspace must exist on the backend
-  // before anything else touches it. This is the one explicit place that
-  // happens — reattach to the last id this browser created (chrome.storage),
-  // or create a fresh one. Nothing downstream guesses or auto-creates.
   useEffect(() => {
     (async () => {
       const saved = await chrome.storage.local.get(STORAGE_KEY);
@@ -51,251 +24,166 @@ export default function App() {
           return;
         }
       } catch {
-        // saved id is stale (e.g. backend restarted) — fall through and create fresh
+        // stale id
       }
-      const created = await api.createWorkspace("", DEFAULT_COLUMNS);
-      await chrome.storage.local.set({ [STORAGE_KEY]: created.id });
-      setWs(created);
+      try {
+        const created = await api.createWorkspace("", []);
+        await chrome.storage.local.set({ [STORAGE_KEY]: created.id });
+        setWs(created);
+      } catch (err: any) {
+        setError(err?.message || "Backend is not reachable. Start it with npm run dev in /backend.");
+      } finally {
+        setLoading(false);
+      }
     })().finally(() => setLoading(false));
   }, []);
 
-  // The content script posts the query whenever the user runs a search on a
-  // recognised engine, so the panel can offer to adopt it as the question.
-  useEffect(() => {
-    const handleMessage = (msg: { type?: string; query?: string }) => {
-      if (msg?.type === "SEARCH_DETECTED" && msg.query) setDetectedQuery(msg.query);
-    };
-    chrome.runtime.onMessage.addListener(handleMessage);
-    return () => chrome.runtime.onMessage.removeListener(handleMessage);
+  const refreshTab = useCallback(() => {
+    chrome.runtime.sendMessage({ type: "GET_ACTIVE_TAB" }, (tab) => {
+      if (chrome.runtime.lastError || !tab) return;
+      setCurrent({ title: tab.title, url: tab.url });
+    });
+    chrome.runtime.sendMessage({ type: "CAPTURE_PAGE" }, (page: PageContext & { error?: string }) => {
+      if (!page || page.error) return;
+      setCurrent({ title: page.title, url: page.url });
+      setSelectedText(page.selectedText || "");
+    });
   }, []);
 
-  // Persist through the same api.setQuestion path the header uses. Upstream
-  // wrote this into a local `question` input, but that second input was removed
-  // precisely so the header stays the single source of truth for the question.
-  // Keyword badge: ask the active tab for its text and see whether it hits any
-  // objective vocabulary. Search result pages are skipped — the query banner
-  // already covers those, and a SERP is not evidence.
   useEffect(() => {
-    const checkPageRelevance = async () => {
-      try {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab?.id) return;
-        const url = tab.url || "";
-        if (/[?&]q=/.test(url) && /google\.|bing\./.test(url)) return;
-
-        chrome.tabs.sendMessage(tab.id, { type: "GET_PAGE_TEXT" }, (response) => {
-          // lastError fires on pages the content script can't run in
-          // (chrome://, the web store). Read it so it isn't logged as unchecked.
-          if (chrome.runtime.lastError || !response?.text) {
-            setRelevantObjective(null);
-            return;
-          }
-          const text = String(response.text).toLowerCase();
-          const hit = Object.entries(OBJECTIVE_KEYWORDS).find(([, keywords]) =>
-            keywords.some((kw) => text.includes(kw.toLowerCase()))
-          );
-          setRelevantObjective(hit ? hit[0] : null);
-        });
-      } catch {
-        setRelevantObjective(null);
+    refreshTab();
+    const port = chrome.runtime.connect({ name: "context-panel" });
+    port.onMessage.addListener(async (msg) => {
+      if (msg?.type === "TAB_READY") {
+        setCurrent({ title: msg.title, url: msg.url });
+        setSelectedText("");
       }
-    };
+      if (msg?.type === "BROWSER_EVENT" && msg.event && ws) {
+        try {
+          const next = await api.ingestEvent(ws.id, msg.event);
+          setWs(next);
+          if (msg.event.type === "highlight") setSelectedText("");
+          if (msg.event.title) setCurrent({ title: msg.event.title, url: msg.event.url });
+        } catch (err) {
+          console.error(err);
+        }
+      }
+    });
+    return () => port.disconnect();
+  }, [ws?.id, refreshTab]);
 
-    checkPageRelevance();
-    chrome.tabs.onUpdated.addListener(checkPageRelevance);
-    chrome.tabs.onActivated.addListener(checkPageRelevance);
-    return () => {
-      chrome.tabs.onUpdated.removeListener(checkPageRelevance);
-      chrome.tabs.onActivated.removeListener(checkPageRelevance);
-    };
-  }, []);
-
-  // One capture path for both banners.
-  const captureCurrentPage = () => {
+  const capture = async () => {
     if (!ws) return;
     setCapturing(true);
-    chrome.runtime.sendMessage({ type: "CAPTURE_PAGE" }, async (page) => {
+    chrome.runtime.sendMessage({ type: "CAPTURE_PAGE" }, async (page: PageContext & { error?: string }) => {
       if (!page || page.error) {
-        alert(page?.error ?? "Could not read the current page.");
+        setError(page?.error ?? "Could not read this page. Reload the tab.");
         setCapturing(false);
         return;
       }
       try {
-        await api.addCapturedSource(ws.id, { title: page.title, url: page.url, text: page.bodyText }, undefined);
-        setDetectedQuery(null);
-        setRelevantObjective(null);
-        refresh();
-      } catch {
-        alert("Couldn't save this page — check the backend logs.");
+        const next = await api.addCapturedSource(ws.id, {
+          title: page.title,
+          url: page.url,
+          text: page.bodyText,
+        });
+        setWs(next);
+        setCurrent({ title: page.title, url: page.url });
+      } catch (err: any) {
+        setError(err?.message || "Capture failed.");
       } finally {
         setCapturing(false);
       }
     });
   };
 
-  const refresh = async () => {
-    if (!ws) return;
-    try {
-      setWs(await api.getWorkspace(ws.id));
-    } catch (err) {
-      if (!String(err).includes("404")) throw err;
-      const created = await api.createWorkspace("", DEFAULT_COLUMNS);
-      await chrome.storage.local.set({ [STORAGE_KEY]: created.id });
-      setWs(created);
-    }
+  const saveHighlight = async () => {
+    if (!ws || !selectedText) return;
+    chrome.runtime.sendMessage({ type: "CAPTURE_PAGE" }, async (page: PageContext & { error?: string }) => {
+      if (!page || page.error) return;
+      const next = await api.ingestEvent(ws.id, {
+        type: "highlight",
+        title: page.title,
+        url: page.url,
+        text: selectedText,
+        pageText: page.bodyText,
+      });
+      setWs(next);
+      setSelectedText("");
+    });
   };
 
-  const runAutomatically = async () => {
-    if (!ws || !ws.question.trim()) return;
-    setRunning(true);
-    try {
-      setWs(await api.startResearch(ws.id, ws.question, ws.table.columns));
-    } catch (err) {
-      // The route returns the real cause now (bad key, Exa failure, schema
-      // validation) instead of an empty 500 — show it rather than swallowing it.
-      alert(`Auto-run failed — ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setRunning(false);
-    }
-  };
-
-  if (loading || !ws) {
-    return <div className="p-4 text-sm text-zinc-500">Loading workspace…</div>;
+  if (loading) {
+    return <div className="p-4 text-sm text-[#9a9488]">Opening research room…</div>;
   }
+  if (error && !ws) {
+    return <div className="p-4 text-sm text-[#d4886a]">{error}</div>;
+  }
+  if (!ws) return null;
 
-  // workspaceId travels as an explicit parameter on every backend tool call
-  // (see backend/src/app/api/copilotkit/route.ts) rather than a header —
-  // this was verified against the real CopilotKit v2 API (see CHANGELOG.md).
   return (
-    <CopilotKit runtimeUrl={`${api.backendUrl}/api/copilotkit`}>
-      <div className="p-4 space-y-4">
-        <ResearchHeader ws={ws} onQuestionSaved={setWs} />
-
-        {detectedQuery && (
-          <div className="flex items-center justify-between gap-2 p-2 bg-blue-50 border border-blue-200 rounded">
-            <span className="text-sm">
-              🔍 You searched: “<strong>{detectedQuery}</strong>”
-            </span>
-            <button
-              onClick={captureCurrentPage}
-              disabled={capturing}
-              className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 whitespace-nowrap"
-            >
-              {capturing ? "Capturing…" : "Capture"}
-            </button>
-          </div>
-        )}
-
-        {relevantObjective && (
-          <div className="flex items-center justify-between gap-2 p-2 bg-green-50 border border-green-200 rounded">
-            <span className="text-sm">
-              📄 This page looks relevant to <strong>{relevantObjective}</strong>
-            </span>
-            <button
-              onClick={captureCurrentPage}
-              disabled={capturing}
-              className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 whitespace-nowrap"
-            >
-              {capturing ? "Capturing…" : "Capture"}
-            </button>
-          </div>
-        )}
-
-        <p className="text-xs text-zinc-500">
-          Objectives below are the default startup/market diligence checklist. Browse and use
-          "Capture this page" to map evidence onto them — or chat with the agent directly.
-        </p>
-
-        <ResearchPlanView ws={ws} onResolved={setWs} />
-        <CapturePageButton workspaceId={ws.id} onCaptured={refresh} />
-        <GapBanner ws={ws} onResolved={setWs} />
-
-        <details className="text-sm">
-          <summary className="cursor-pointer text-zinc-500">Optional: compare named competitors on specific columns</summary>
-          {/* The question now lives in one place — the header — instead of
-              being typed again here. Two inputs for the same field meant the
-              header could say one thing and the auto-run research another. */}
-          <div className="flex items-center gap-2 mt-2">
-            <p className="flex-1 text-xs text-zinc-500">
-              {ws.question
-                ? <>Runs live Exa research for <span className="text-zinc-700">“{ws.question}”</span> and fills a cited comparison table. Columns are proposed automatically.</>
-                : "Set a research question in the header first."}
-            </p>
-            <button
-              onClick={runAutomatically}
-              disabled={running || !ws.question.trim()}
-              className="px-2 py-1 bg-emerald-700 text-white rounded disabled:opacity-50 whitespace-nowrap"
-            >
-              {running ? "Running…" : "Run automatically"}
-            </button>
-          </div>
-        </details>
-        {/* "Run automatically" is the deterministic Exa-only fallback path for
-            the comparison-table mode — useful if the chat tool-calling loop is
-            unreliable mid-demo. The objectives checklist above is now primary. */}
-        <ComparisonTableView ws={ws} />
-        <ReportView ws={ws} />
-        <SourcesPanel ws={ws} />
-        <ActivityFeed ws={ws} />
-      </div>
-      <CopilotChat ws={ws} onWorkspaceChange={refresh} />
-    </CopilotKit>
-  );
-}
-
-// Small wrapper so useAgentContext/CopilotSidebar run inside the
-// <CopilotKit> provider tree, with access to the current workspace.
-function CopilotChat({ ws, onWorkspaceChange }: { ws: ResearchWorkspace; onWorkspaceChange: () => void }) {
-  // Gives the agent "eyes": the workspace id and current table shape.
-  // FIX (was gap #1 in the review): the model needs workspaceId to call any
-  // backend tool (see src/app/api/copilotkit/route.ts on the backend) —
-  // exposing it here plus repeating it in the sidebar instructions below
-  // means the model doesn't have to guess or invent one.
-  // NOTE: v1's useCopilotReadable doesn't exist in v2 — this is
-  // useAgentContext, verified against the real installed package (same
-  // {description, value} shape, just renamed).
-  useAgentContext({
-    description:
-      "The current research workspace id, question, table columns, and research objectives (id/label/confidence). " +
-      "Every tool call must include this workspaceId. Map evidence onto these objective ids with update_objective — " +
-      "don't invent new ids.",
-    value: {
-      workspaceId: ws.id,
-      question: ws.question,
-      columns: ws.table.columns,
-      objectives: ws.objectives.map((o) => ({ id: o.id, label: o.label, confidence: o.confidence })),
-    },
-  });
-
-  // UNVERIFIED: whether CopilotKit v2's chat UI exposes a hook/callback for
-  // "a tool call just finished, re-render" — check this against your
-  // installed version. Until then, the visible workaround is the manual
-  // "Refresh" button below (or re-open the side panel / click "Run
-  // automatically" which does refresh state directly).
-  return (
-    <>
-      {/* NOTE: v1's `instructions` prop doesn't exist on CopilotSidebar/
-          CopilotChat in v2 (verified against the real package — it errors
-          at compile time, not just at runtime). The system prompt now lives
-          on the backend agent (`prompt` field of BuiltInAgent, see
-          backend/src/app/api/copilotkit/route.ts) — it doesn't need ws.id
-          interpolated into it because useAgentContext above already hands
-          the model the current workspaceId as live context on every turn. */}
-      <CopilotSidebar
-        labels={{
-          // Field names verified against CopilotChatDefaultLabels in the real
-          // package — v1's { title, initial } shape doesn't exist in v2.
-          modalHeaderTitle: "Research Agent",
-          welcomeMessageText: "Tell me what you're researching — a startup idea, a market — and I'll work the objectives checklist as you browse. Try: is there a market for premium swimwear in Kenya?",
+    <div className="h-screen bg-[#171613]">
+      {error ? (
+        <div className="border-b border-[#2c2924] bg-[#d4886a]/10 px-3 py-2 text-[12px] text-[#d4886a]">
+          {error}
+          <button className="ml-2 underline" onClick={() => setError(null)}>
+            dismiss
+          </button>
+        </div>
+      ) : null}
+      <ResearchPanel
+        ws={ws}
+        currentTitle={current.title}
+        currentUrl={current.url}
+        selectedText={selectedText}
+        busy={busy}
+        capturing={capturing}
+        onSetQuestion={async (q) => {
+          setBusy("topic");
+          try {
+            setWs(await api.setQuestion(ws.id, q));
+          } finally {
+            setBusy(null);
+          }
+        }}
+        onCapture={capture}
+        onSaveHighlight={saveHighlight}
+        onOpenLink={(url) => chrome.runtime.sendMessage({ type: "OPEN_URL", url })}
+        onFillObjective={async (id) => {
+          setBusy("fill");
+          try {
+            setWs(await api.fillObjective(ws.id, id));
+          } finally {
+            setBusy(null);
+          }
+        }}
+        onResolveContradiction={async (objectiveId, contradictionId, decision) => {
+          setWs(await api.resolveContradiction(ws.id, objectiveId, contradictionId, decision));
+        }}
+        onCompare={async () => {
+          setBusy("compare");
+          try {
+            setWs(
+              await api.startResearch(ws.id, ws.question, ["Overview", "Pricing", "Strengths", "Risks"]),
+            );
+          } finally {
+            setBusy(null);
+          }
+        }}
+        onComplete={async () => {
+          setBusy("complete");
+          try {
+            setWs(await api.complete(ws.id));
+          } finally {
+            setBusy(null);
+          }
+        }}
+        onNewTopic={async () => {
+          const created = await api.createWorkspace("", []);
+          await chrome.storage.local.set({ [STORAGE_KEY]: created.id });
+          setWs(created);
         }}
       />
-      <button
-        onClick={onWorkspaceChange}
-        className="fixed bottom-4 left-4 text-xs px-2 py-1 bg-zinc-200 rounded"
-        title="Re-fetch the workspace if the table doesn't update after a chat action"
-      >
-        ↻ Refresh
-      </button>
-    </>
+    </div>
   );
 }

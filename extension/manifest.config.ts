@@ -1,23 +1,18 @@
 import { defineManifest } from "@crxjs/vite-plugin";
 
-// UNVERIFIED: @crxjs/vite-plugin is the common MV3+Vite+React combo, but I
-// haven't compile-verified this against the beta version pinned in
-// package.json — check its quickstart if `npm run dev` errors on this file.
-const BACKEND_URL = process.env.VITE_BACKEND_URL || "http://localhost:3000";
+const BACKEND_URL = process.env.VITE_BACKEND_URL || "http://localhost:43123";
 
 export default defineManifest({
   manifest_version: 3,
-  name: "Research Room",
-  version: "0.1.0",
-  description: "An agent that researches inside your browser workspace.",
-  action: { default_title: "Open Research Room" },
+  name: "Context Labs",
+  version: "0.2.0",
+  description: "A quiet research agent that reads highlights, tabs, and link clicks in your browser.",
+  action: { default_title: "Open Context Labs" },
   side_panel: { default_path: "src/sidepanel/index.html" },
   background: { service_worker: "src/background.ts", type: "module" },
   content_scripts: [
     { matches: ["<all_urls>"], js: ["src/content-script.ts"], run_at: "document_idle" },
   ],
-  // <all_urls> is broad — fine for a hackathon demo, scope this down to
-  // specific sites before any real submission/publish.
-  permissions: ["sidePanel", "activeTab", "scripting", "storage"],
+  permissions: ["sidePanel", "activeTab", "scripting", "storage", "tabs", "contextMenus"],
   host_permissions: ["<all_urls>", `${BACKEND_URL}/*`],
 });
