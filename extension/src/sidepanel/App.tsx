@@ -252,7 +252,8 @@ export default function App() {
   }
 
   return (
-    <CopilotKit runtimeUrl={`${api.backendUrl}/api/copilotkit`}>
+    // Temporarily disabled CopilotKit to debug CSS loading
+    // <CopilotKit runtimeUrl={`${api.backendUrl}/api/copilotkit`}>
       <div className="flex flex-col h-full">
         {/* Header */}
         <div className="flex-shrink-0 p-4 border-b border-zinc-200">
@@ -360,6 +361,6 @@ export default function App() {
         </div>
       </div>
     </div>
-    </CopilotKit>
+    // </CopilotKit>
   );
 }
