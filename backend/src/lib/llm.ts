@@ -43,6 +43,15 @@ async function withFallback<T>(fn: (client: OpenAI) => Promise<T>): Promise<T> {
   try {
     return await fn(primary());
   } catch (err: any) {
+    // Log full error details for debugging
+    console.error("LLM call failed:", {
+      status: err?.status,
+      message: err?.message,
+      error: err?.error,
+      type: err?.type,
+      code: err?.code,
+    });
+
     const rateLimited =
       err?.status === 429 ||
       err?.code === "rate_limit_exceeded" ||
@@ -69,11 +78,16 @@ export async function structured<T>(
   system: string,
   user: string,
 ): Promise<T> {
+  // OpenAI requires the word "json" in the prompt when using json_object mode
+  const systemWithJson = system.toLowerCase().includes("json")
+    ? system
+    : `${system}\n\nReturn your response as valid JSON.`;
+
   const res = await chat({
     model: DEFAULT_MODEL,
     response_format: { type: "json_object" },
     messages: [
-      { role: "system", content: system },
+      { role: "system", content: systemWithJson },
       { role: "user", content: user },
     ],
   });
@@ -85,7 +99,7 @@ export async function structured<T>(
       model: DEFAULT_MODEL,
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: system + "\nReturn ONLY valid JSON matching the schema." },
+        { role: "system", content: systemWithJson + "\nReturn ONLY valid JSON matching the schema." },
         { role: "user", content: raw + "\n\nThat output failed validation. Fix it." },
       ],
     });
