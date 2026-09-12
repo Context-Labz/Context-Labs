@@ -52,6 +52,15 @@ async function withFallback<T>(fn: (client: OpenAI) => Promise<T>): Promise<T> {
   try {
     return await fn(primary());
   } catch (err: any) {
+    // Log full error details for debugging
+    console.error("LLM call failed:", {
+      status: err?.status,
+      message: err?.message,
+      error: err?.error,
+      type: err?.type,
+      code: err?.code,
+    });
+
     const rateLimited =
       err?.status === 429 ||
       err?.code === "rate_limit_exceeded" ||
@@ -117,6 +126,9 @@ export async function structured<T>(
   system: string,
   user: string,
 ): Promise<T> {
+  // NOTE: response_format json_object requires the literal word "json"
+  // somewhere in the prompt. schemaPrompt() always emits "JSON Schema"
+  // and "raw JSON", so that requirement is structurally satisfied.
   const instructions = schemaPrompt(system, schema);
 
   const res = await chat({

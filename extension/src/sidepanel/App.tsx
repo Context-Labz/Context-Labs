@@ -22,6 +22,7 @@ export default function App() {
   const [ws, setWs] = useState<ResearchWorkspace | null>(null);
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
+  const [detectedQuery, setDetectedQuery] = useState<string | null>(null);
 
   // FIX (was gap #2 in the review): a workspace must exist on the backend
   // before anything else touches it. This is the one explicit place that
@@ -44,6 +45,25 @@ export default function App() {
       setWs(created);
     })().finally(() => setLoading(false));
   }, []);
+
+  // The content script posts the query whenever the user runs a search on a
+  // recognised engine, so the panel can offer to adopt it as the question.
+  useEffect(() => {
+    const handleMessage = (msg: { type?: string; query?: string }) => {
+      if (msg?.type === "SEARCH_DETECTED" && msg.query) setDetectedQuery(msg.query);
+    };
+    chrome.runtime.onMessage.addListener(handleMessage);
+    return () => chrome.runtime.onMessage.removeListener(handleMessage);
+  }, []);
+
+  // Persist through the same api.setQuestion path the header uses. Upstream
+  // wrote this into a local `question` input, but that second input was removed
+  // precisely so the header stays the single source of truth for the question.
+  const trackSearch = async () => {
+    if (!detectedQuery || !ws) return;
+    setWs(await api.setQuestion(ws.id, detectedQuery));
+    setDetectedQuery(null);
+  };
 
   // Re-fetch, and self-heal if the backend no longer knows this workspace.
   // The store is in-memory server-side, so a backend restart invalidates the id
@@ -86,6 +106,20 @@ export default function App() {
     <CopilotKit runtimeUrl={`${api.backendUrl}/api/copilotkit`}>
       <div className="p-4 space-y-4">
         <ResearchHeader ws={ws} onQuestionSaved={setWs} />
+
+        {detectedQuery && (
+          <div className="flex items-center justify-between gap-2 p-2 bg-blue-50 border border-blue-200 rounded">
+            <span className="text-sm">
+              🔍 You searched: “<strong>{detectedQuery}</strong>”
+            </span>
+            <button
+              onClick={trackSearch}
+              className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 whitespace-nowrap"
+            >
+              Track this search
+            </button>
+          </div>
+        )}
 
         <p className="text-xs text-zinc-500">
           Objectives below are the default startup/market diligence checklist. Browse and use

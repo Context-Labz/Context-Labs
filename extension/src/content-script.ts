@@ -14,6 +14,21 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 });
 
+// Search recognition: detect Google/Bing search queries and notify the panel
+(function detectSearchQuery() {
+  const hostname = window.location.hostname.toLowerCase();
+  const isSearchPage = hostname.includes("google.") || hostname.includes("bing.");
+
+  if (isSearchPage) {
+    const url = new URL(window.location.href);
+    const query = url.searchParams.get("q");
+
+    if (query) {
+      chrome.runtime.sendMessage({ type: "SEARCH_DETECTED", query });
+    }
+  }
+})();
+
 // ─────────────────────────────────────────────────────────────────────────
 // TOMORROW (build during event) — ambient recognition. See AGENT_VISION.md
 // "The agent we're actually building". These are the browser-native, NO-AI
