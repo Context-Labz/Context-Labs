@@ -17,13 +17,13 @@ const claimsSchema = z.object({
 const objectiveMatchSchema = z.object({
   matches: z.array(
     z.object({
-      objectiveId: z.string(),
-      value: z.string().describe("The specific claim this page supports, e.g. \"KES 3,500–6,500\""),
-      quote: z.string().describe("Verbatim excerpt from the page text"),
-      confidence: z.enum(["low", "medium", "high"]),
-      summary: z.string().describe("One-sentence updated synthesis for this objective given all evidence so far, including any prior evidence listed below"),
-      contradictsExisting: z.boolean().describe("True if this value conflicts with the objective's existing evidence/summary below"),
-      contradictionNote: z.string().optional().describe("Required if contradictsExisting is true: what conflicts, in plain language"),
+      objectiveId: z.string().default(""),
+      value: z.string().default(""),
+      quote: z.string().default(""),
+      confidence: z.enum(["low", "medium", "high"]).default("low"),
+      summary: z.string().default(""),
+      contradictsExisting: z.boolean().default(false),
+      contradictionNote: z.string().optional(),
     })
   ),
 });
@@ -63,17 +63,43 @@ export async function POST(req: Request) {
         })
         .join("\n");
 
+      const availableIds = openObjectives.map((o) => o.id).join(", ");
+
       const result = await structured(
         objectiveMatchSchema,
-        "You check a captured web page against a list of research objectives. For each objective this page provides real " +
-          "evidence for, return a match with a verbatim quote — never invent a value or quote. Skip objectives the page " +
-          "says nothing about. If the page's value conflicts with an objective's existing evidence, set " +
-          "contradictsExisting=true and explain the conflict in contradictionNote — do NOT silently treat it as agreement.",
+        "You check a captured web page against research objectives and return matches in EXACT JSON format.\n\n" +
+          "CRITICAL: Use these EXACT key names (case-sensitive):\n" +
+          "{\n" +
+          '  "matches": [\n' +
+          "    {\n" +
+          '      "objectiveId": "<MUST be exactly one of the provided ids>",\n' +
+          '      "value": "<specific claim from page, e.g. \'KES 500M market\'>",\n' +
+          '      "quote": "<verbatim text excerpt from page>",\n' +
+          '      "confidence": "low" | "medium" | "high",\n' +
+          '      "summary": "<one-sentence synthesis>",\n' +
+          '      "contradictsExisting": true | false,\n' +
+          '      "contradictionNote": "<required if contradictsExisting is true>"\n' +
+          "    }\n" +
+          "  ]\n" +
+          "}\n\n" +
+          `Available objective IDs (use EXACTLY one of these): ${availableIds}\n\n` +
+          "Rules:\n" +
+          "- Return {\"matches\": []} if nothing matches\n" +
+          "- Every field is REQUIRED except contradictionNote (optional unless contradictsExisting=true)\n" +
+          "- Never invent quotes or values — only use what's in the page text\n" +
+          "- If page evidence conflicts with existing evidence, set contradictsExisting=true\n" +
+          "- Do NOT add, rename, or omit any keys",
         `Objectives:\n${objectivesContext}\n\nPage text:\n${String(text).slice(0, 4000)}`
       );
 
+      // Filter out matches with missing required fields and ensure type safety
+      const validMatches = result.matches.filter(
+        (m): m is typeof m & { objectiveId: string; value: string; quote: string; confidence: "low" | "medium" | "high"; summary: string } =>
+          !!m.objectiveId && !!m.value && !!m.quote && !!m.summary && !!m.confidence
+      );
+
       let contradictionCount = 0;
-      for (const match of result.matches) {
+      for (const match of validMatches) {
         const obj = ws.objectives.find((o) => o.id === match.objectiveId);
         if (!obj) continue; // model referenced an id we didn't offer — ignore rather than crash
         const evidence = { sourceId: source.id, quote: match.quote, value: match.value };
@@ -95,7 +121,7 @@ export async function POST(req: Request) {
           logActivity(ws, "table", `${obj.label}: ${match.confidence} confidence from captured page`);
         }
       }
-      if (!result.matches.length) {
+      if (!validMatches.length) {
         logActivity(ws, "search", "Captured page didn't match any open objective.");
       } else if (contradictionCount) {
         logActivity(ws, "warn", `${contradictionCount} contradiction(s) need a decision — see the research plan.`);

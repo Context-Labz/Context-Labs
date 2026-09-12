@@ -16,12 +16,24 @@ import CapturePageButton from "./components/CapturePageButton";
 const DEFAULT_COLUMNS: string[] = [];
 const STORAGE_KEY = "research-room:workspace-id";
 
+// Keyword vocabularies for objective matching (plain string matching, no AI)
+const OBJECTIVE_KEYWORDS: Record<string, string[]> = {
+  "Market Size": ["market size", "market value", "tam", "billion", "valued at"],
+  "Competition": ["competitor", "vs", "alternative", "rival", "market share"],
+  "Customer Demand": ["demand", "customers want", "adoption", "growth rate"],
+  "Pricing": ["price", "pricing", "per month", "fee", "subscription", "$", "kes"],
+  "Team & Execution": ["founder", "ceo", "co-founder", "team", "leadership"],
+  "Regulatory & Distribution Risk": ["regulation", "license", "compliance", "law", "distribution"],
+};
+
 export default function App() {
   const [ws, setWs] = useState<ResearchWorkspace | null>(null);
   const [loading, setLoading] = useState(true);
   const [question, setQuestion] = useState("");
   const [running, setRunning] = useState(false);
   const [detectedQuery, setDetectedQuery] = useState<string | null>(null);
+  const [relevantObjective, setRelevantObjective] = useState<string | null>(null);
+  const [capturingRelevant, setCapturingRelevant] = useState(false);
 
   // FIX (was gap #2 in the review): a workspace must exist on the backend
   // before anything else touches it. This is the one explicit place that
@@ -58,6 +70,52 @@ export default function App() {
     return () => chrome.runtime.onMessage.removeListener(handleMessage);
   }, []);
 
+  // Check current page for objective relevance
+  useEffect(() => {
+    const checkPageRelevance = async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) return;
+
+        // Skip search result pages (Task A handles those)
+        const url = tab.url || "";
+        if (url.includes("google.") && url.includes("q=")) return;
+        if (url.includes("bing.") && url.includes("q=")) return;
+
+        chrome.tabs.sendMessage(tab.id, { type: "GET_PAGE_TEXT" }, (response: any) => {
+          if (chrome.runtime.lastError || !response?.text) {
+            setRelevantObjective(null);
+            return;
+          }
+
+          const text = response.text.toLowerCase();
+
+          // Check each objective's keywords
+          for (const [objective, keywords] of Object.entries(OBJECTIVE_KEYWORDS)) {
+            if (keywords.some((kw) => text.includes(kw.toLowerCase()))) {
+              setRelevantObjective(objective);
+              return;
+            }
+          }
+
+          setRelevantObjective(null);
+        });
+      } catch {
+        setRelevantObjective(null);
+      }
+    };
+
+    // Check on mount and when tab changes
+    checkPageRelevance();
+    chrome.tabs.onUpdated.addListener(checkPageRelevance);
+    chrome.tabs.onActivated.addListener(checkPageRelevance);
+
+    return () => {
+      chrome.tabs.onUpdated.removeListener(checkPageRelevance);
+      chrome.tabs.onActivated.removeListener(checkPageRelevance);
+    };
+  }, []);
+
   const refresh = async () => {
     if (ws) setWs(await api.getWorkspace(ws.id));
   };
@@ -67,6 +125,27 @@ export default function App() {
       setQuestion(detectedQuery);
       setDetectedQuery(null); // Clear the banner after tracking
     }
+  };
+
+  const captureRelevantPage = () => {
+    if (!ws || !relevantObjective) return;
+    setCapturingRelevant(true);
+    chrome.runtime.sendMessage({ type: "CAPTURE_PAGE" }, async (page: any) => {
+      if (!page || page.error) {
+        alert(page?.error ?? "Could not read the current page.");
+        setCapturingRelevant(false);
+        return;
+      }
+      try {
+        await api.addCapturedSource(ws.id, { title: page.title, url: page.url, text: page.bodyText }, undefined);
+        setRelevantObjective(null); // Clear badge after capturing
+        refresh();
+      } catch {
+        alert("Couldn't save this page — check the backend logs.");
+      } finally {
+        setCapturingRelevant(false);
+      }
+    });
   };
 
   const runAutomatically = async () => {
@@ -97,6 +176,21 @@ export default function App() {
             className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 whitespace-nowrap"
           >
             Track this search
+          </button>
+        </div>
+      )}
+
+      {relevantObjective && (
+        <div className="flex items-center justify-between gap-2 p-2 bg-green-50 border border-green-200 rounded">
+          <span className="text-sm">
+            📄 This page looks relevant to <strong>{relevantObjective}</strong> — Capture?
+          </span>
+          <button
+            onClick={captureRelevantPage}
+            disabled={capturingRelevant}
+            className="px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50 whitespace-nowrap"
+          >
+            {capturingRelevant ? "Capturing…" : "Capture"}
           </button>
         </div>
       )}
